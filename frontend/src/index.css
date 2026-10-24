@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  color-scheme: light;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+
+  /* Material 3 Light Mode Tokens */
+  --color-primary: #6750A4;
+  --color-on-primary: #FFFFFF;
+  --color-primary-container: #EADDFF;
+  --color-on-primary-container: #21005D;
+  --color-secondary: #625B71;
+  --color-secondary-container: #E8DEF8;
+  --color-on-secondary-container: #1D192B;
+  --color-tertiary: #7D5260;
+  --color-tertiary-container: #FFD8E4;
+  --color-on-tertiary-container: #31111D;
+  --color-surface: #FEF7FF;
+  --color-surface-dim: #DED8E1;
+  --color-surface-bright: #FEF7FF;
+  --color-surface-container-lowest: #FFFFFF;
+  --color-surface-container-low: #F7F2FA;
+  --color-surface-container: #F3EDF7;
+  --color-surface-container-high: #ECE6F0;
+  --color-surface-container-highest: #E6E0E9;
+  --color-on-surface: #1D1B20;
+  --color-on-surface-variant: #49454F;
+  --color-outline: #79747E;
+  --color-outline-variant: #CAC4D0;
+  --color-error: #B3261E;
+  --color-error-container: #F9DEDC;
+}
+
+/* Material 3 Soft-Contrast Dark Mode (Calibrated to eliminate glare & halation) */
+.dark {
+  color-scheme: dark;
+
+  /* Expressive Primary & Secondary */
+  --color-primary: #D0BCFF;
+  --color-on-primary: #381E72;
+  --color-primary-container: #4F378B;
+  --color-on-primary-container: #EADDFF;
+  --color-secondary: #CCC2DC;
+  --color-secondary-container: #4A4458;
+  --color-on-secondary-container: #E8DEF8;
+  --color-tertiary: #EFB8C8;
+  --color-tertiary-container: #633B48;
+  --color-on-tertiary-container: #FFD8E4;
+
+  /* Balanced Dark Surfaces (Prevents blinding contrast against pure black) */
+  --color-surface: #141218;
+  --color-surface-dim: #141218;
+  --color-surface-bright: #3B383E;
+  --color-surface-container-lowest: #1A1820;
+  --color-surface-container-low: #1F1D24;
+  --color-surface-container: #25232A;
+  --color-surface-container-high: #2E2C34;
+  --color-surface-container-highest: #38353F;
+  
+  /* Soft, Clear Text Tokens (Warm off-white for crisp, comfortable reading) */
+  --color-on-surface: #E6E1E5;
+  --color-on-surface-variant: #CAC4D0;
+  --color-outline: #8E8994;
+  --color-outline-variant: #49454F;
+  --color-error: #FFB4AB;
+  --color-error-container: #93000A;
+}
+
+/* Soft, Complementary Dark Mode Borders & Rings (subtle and non-contrasting) */
+.dark *,
+.dark *::before,
+.dark *::after {
+  border-color: rgba(255, 255, 255, 0.08);
+  --tw-ring-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Fix native select, option, and optgroup elements in dark mode to prevent white-on-white text */
+.dark select,
+.dark option,
+.dark optgroup {
+  background-color: #25232A !important;
+  color: #E6E1E5 !important;
+}
+
+select option,
+select optgroup {
+  background-color: var(--color-surface, #FEF7FF);
+  color: var(--color-on-surface, #1D1B20);
+}
+
+/* Custom scrollbars matching Material 3 pill shape */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-outline-variant);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-outline);
+}
