@@ -28,7 +28,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
       <div className="bg-m3-surface rounded-4xl max-w-sm w-full p-6 sm:p-8 shadow-2xl border border-m3-outline-variant/30 flex flex-col">
         <div className="flex items-center gap-2 mb-2">
           <div className="w-8 h-8 rounded-full bg-m3-primary-container text-m3-on-primary-container flex items-center justify-center">

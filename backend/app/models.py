@@ -1,6 +1,6 @@
 import datetime
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, ForeignKey
+    Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Index, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
@@ -43,15 +43,29 @@ class ChatSession(Base):
     id = Column(String(64), primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String(255), default="New Chat")
+    dashboard_id = Column(String(64), ForeignKey("dashboards.id"), nullable=True)
+    scope = Column(String(20), default="dashboard")  # 'global', 'dashboard', 'pin', 'widget'
+    pin_id = Column(Integer, ForeignKey("dashboard_comments.id", ondelete="CASCADE"), nullable=True)
+    widget_id = Column(String(100), nullable=True)
+    agent_id = Column(String(50), default="general")  # 'general', 'github-agent', 'superset-agent', 'correlation-agent'
+    parent_session_id = Column(String(64), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True)  # Agor genealogy forking
+    fork_message_id = Column(Integer, nullable=True)  # Message index / ID where fork branched off
+    status = Column(String(30), default="idle")  # 'idle', 'running', 'stopping', 'awaiting_permission', 'timed_out', 'failed', 'completed'
+    last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="chat_sessions")
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+    dashboard = relationship("Dashboard")
+    parent = relationship("ChatSession", remote_side=[id], backref="children")
 
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_session_created", "session_id", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String(64), ForeignKey("chat_sessions.id"), nullable=False)
@@ -59,6 +73,7 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     thoughts = Column(Text, nullable=True)  # Antigravity thinking tokens
     tool_calls_json = Column(Text, nullable=True)  # Intercepted tool call details
+    proposals_json = Column(Text, nullable=True)  # Persisted dataset proposals & user inquiries with approval audit
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     session = relationship("ChatSession", back_populates="messages")
@@ -66,6 +81,9 @@ class ChatMessage(Base):
 
 class Dashboard(Base):
     __tablename__ = "dashboards"
+    __table_args__ = (
+        Index("ix_dashboards_user_public", "user_id", "is_public"),
+    )
 
     id = Column(String(64), primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -73,6 +91,8 @@ class Dashboard(Base):
     description = Column(Text, nullable=True)
     is_default = Column(Boolean, default=False)
     is_public = Column(Boolean, default=False)
+    datasources_json = Column(Text, nullable=True)  # JSON: list of bound sources e.g. [{"type": "git", "id": "hog", "label": "..."}]
+    zones_json = Column(Text, nullable=True)  # JSON: visual canvas zones [{"id": "z1", "label": "Velocity", "color": "indigo"}]
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
@@ -83,6 +103,10 @@ class Dashboard(Base):
 
 class DashboardWidget(Base):
     __tablename__ = "dashboard_widgets"
+    __table_args__ = (
+        Index("ix_dashboard_widgets_dash_widget", "dashboard_id", "widget_id"),
+        UniqueConstraint("dashboard_id", "widget_id", name="uq_dashboard_widget_id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     dashboard_id = Column(String(64), ForeignKey("dashboards.id"), nullable=False)
@@ -106,9 +130,11 @@ class DashboardComment(Base):
     widget_id = Column(String(100), nullable=True)  # Target widget slug, or null for canvas-level
     user_email = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
+    replies_json = Column(Text, nullable=True)  # JSON: list of thread replies [{"id", "user_email", "content", "created_at"}]
     pos_x = Column(Integer, default=50)  # Percentage X relative to widget (0 - 100)
     pos_y = Column(Integer, default=50)  # Percentage Y relative to widget (0 - 100)
     is_resolved = Column(Boolean, default=False)
+    chat_session_id = Column(String(64), nullable=True)  # Dedicated ChatSession for localized AI Q&A
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     dashboard = relationship("Dashboard", back_populates="comments")

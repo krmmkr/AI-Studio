@@ -1,0 +1,10 @@
+# Development & Testing Dependencies Only
+# DO NOT include this file in production Docker images
+-r backend/requirements.txt
+
+# OpenCode Client SDK (Local Dev/Testing Only)
+opencode-py
+
+# Testing Framework
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

@@ -1,11 +1,18 @@
 import json
 import uuid
+import datetime
+import logging
+from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from backend.app.auth import get_current_user
 from backend.app.database import get_db
-from backend.app.models import User, Dashboard, DashboardWidget, DashboardComment
+from backend.app.models import User, Dashboard, DashboardWidget, DashboardComment, ChatSession, ChatMessage
+from backend.app.services.duckdb_service import duckdb_service
+from backend.app.schemas.canvas_contracts import compile_widget_spec, ChartArchetype
+
+logger = logging.getLogger("dashboard_routes")
 
 router = APIRouter(prefix="/api/dashboards", tags=["dashboards"])
 
@@ -21,13 +28,26 @@ class WidgetPayload(BaseModel):
 class DashboardCreatePayload(BaseModel):
     title: str
     description: str | None = None
+    sources: list[dict] | None = None
+    datasources: list[dict] | None = None
 
 class LayoutUpdatePayload(BaseModel):
-    # Mapping of widget_id -> { x, y, w, h }
-    layouts: dict[str, dict[str, int]]
+    # Mapping of widget_id -> { x, y, w, h, pixel_height?, zone_id? }
+    layouts: dict[str, dict[str, Any]]
+
+class DashboardZonesPayload(BaseModel):
+    zones: list[dict[str, Any]]
 
 class SharePayload(BaseModel):
     is_public: bool
+
+class DashboardSourcesPayload(BaseModel):
+    sources: list[dict] | None = None
+    datasources: list[dict] | None = None
+
+class DashboardEvaluatePayload(BaseModel):
+    filters: dict = {}
+    widget_ids: list[str] | None = None
 
 @router.get("")
 def list_dashboards(scope: str = "all", current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -52,7 +72,8 @@ def list_dashboards(scope: str = "all", current_user: User = Depends(get_current
             "is_owner": (d.user_id == current_user.id),
             "owner_email": owner.email if owner else "Team Member",
             "created_at": d.created_at.isoformat() if d.created_at else None,
-            "widget_count": len(d.widgets)
+            "widget_count": len(d.widgets),
+            "datasources": json.loads(d.datasources_json) if d.datasources_json else []
         })
     return results
 
@@ -86,6 +107,13 @@ def get_dashboard(dashboard_id: str, current_user: User = Depends(get_current_us
             "updated_at": w.updated_at.isoformat() if w.updated_at else None
         })
 
+    # Deterministic spatial sort: order widgets by grid y (row), grid x (col), and id
+    widgets_data.sort(key=lambda item: (
+        item.get("grid", {}).get("y", 0) if isinstance(item.get("grid"), dict) else 0,
+        item.get("grid", {}).get("x", 0) if isinstance(item.get("grid"), dict) else 0,
+        str(item.get("id", ""))
+    ))
+
     owner = db.query(User).filter(User.id == dashboard.user_id).first()
     return {
         "id": dashboard.id,
@@ -95,8 +123,21 @@ def get_dashboard(dashboard_id: str, current_user: User = Depends(get_current_us
         "is_public": bool(dashboard.is_public),
         "is_owner": (dashboard.user_id == current_user.id),
         "owner_email": owner.email if owner else "Team Member",
-        "widgets": widgets_data
+        "widgets": widgets_data,
+        "datasources": json.loads(dashboard.datasources_json) if dashboard.datasources_json else [],
+        "zones": json.loads(dashboard.zones_json) if getattr(dashboard, "zones_json", None) else []
     }
+
+@router.put("/{dashboard_id}/zones")
+def update_dashboard_zones(dashboard_id: str, payload: DashboardZonesPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    if dash.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only owner can modify dashboard zones")
+    dash.zones_json = json.dumps(payload.zones)
+    db.commit()
+    return {"id": dash.id, "zones": payload.zones}
 
 @router.put("/{dashboard_id}/share")
 def toggle_share_dashboard(dashboard_id: str, payload: SharePayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -109,19 +150,91 @@ def toggle_share_dashboard(dashboard_id: str, payload: SharePayload, current_use
     db.commit()
     return {"id": dash.id, "is_public": dash.is_public}
 
+@router.put("/{dashboard_id}/sources")
+def update_dashboard_sources(dashboard_id: str, payload: DashboardSourcesPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    if dash.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only owner can modify dashboard sources")
+    srcs = payload.sources if payload.sources is not None else (payload.datasources or [])
+    dash.datasources_json = json.dumps(srcs)
+    db.commit()
+    return {"id": dash.id, "datasources": srcs}
+
 @router.post("")
 def create_dashboard(payload: DashboardCreatePayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     dash_id = str(uuid.uuid4())
+    srcs = payload.sources if payload.sources is not None else (payload.datasources or [])
     dash = Dashboard(
         id=dash_id,
         user_id=current_user.id,
         title=payload.title,
         description=payload.description,
-        is_default=False
+        is_default=False,
+        datasources_json=json.dumps(srcs) if srcs else None
     )
     db.add(dash)
     db.commit()
     return {"id": dash.id, "title": dash.title}
+
+@router.post("/{dashboard_id}/duplicate")
+def duplicate_dashboard(dashboard_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    source_dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not source_dash:
+        raise HTTPException(status_code=404, detail="Source dashboard not found")
+
+    new_dash_id = str(uuid.uuid4())
+    new_dash = Dashboard(
+        id=new_dash_id,
+        user_id=current_user.id,
+        title=f"{source_dash.title} (Copy)",
+        description=source_dash.description,
+        is_default=False,
+        is_public=False,
+        datasources_json=source_dash.datasources_json
+    )
+    db.add(new_dash)
+    db.flush()
+
+    # Clone widgets
+    source_widgets = db.query(DashboardWidget).filter(DashboardWidget.dashboard_id == dashboard_id).all()
+    for w in source_widgets:
+        cloned_w = DashboardWidget(
+            dashboard_id=new_dash_id,
+            widget_id=str(uuid.uuid4())[:8],
+            title=w.title,
+            widget_type=w.widget_type,
+            grid_json=w.grid_json,
+            spec_json=w.spec_json,
+            datasource_json=w.datasource_json
+        )
+        db.add(cloned_w)
+
+    db.commit()
+    return {"id": new_dash.id, "title": new_dash.title, "widget_count": len(source_widgets)}
+
+@router.delete("/{dashboard_id}")
+def delete_dashboard(dashboard_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dashboard = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+
+    if dashboard.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized to delete this dashboard")
+
+    # Detach any chat sessions scoped to this dashboard
+    db.query(ChatSession).filter(ChatSession.dashboard_id == dashboard_id).update(
+        {ChatSession.dashboard_id: None}, synchronize_session=False
+    )
+
+    # Delete associated widgets and comments
+    db.query(DashboardWidget).filter(DashboardWidget.dashboard_id == dashboard_id).delete(synchronize_session=False)
+    db.query(DashboardComment).filter(DashboardComment.dashboard_id == dashboard_id).delete(synchronize_session=False)
+
+    db.delete(dashboard)
+    db.commit()
+    return {"success": True, "id": dashboard_id, "message": "Dashboard deleted successfully"}
 
 @router.post("/{dashboard_id}/widgets")
 def upsert_widget(dashboard_id: str, payload: WidgetPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -182,6 +295,13 @@ def update_dashboard_layout(dashboard_id: str, payload: LayoutUpdatePayload, cur
 
 @router.post("/{dashboard_id}/widgets/{widget_id}/refresh")
 def refresh_widget(dashboard_id: str, widget_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
     widget = db.query(DashboardWidget).filter(
         DashboardWidget.dashboard_id == dashboard_id,
         DashboardWidget.widget_id == widget_id
@@ -192,27 +312,66 @@ def refresh_widget(dashboard_id: str, widget_id: str, current_user: User = Depen
     datasource = json.loads(widget.datasource_json) if widget.datasource_json else {}
     spec = json.loads(widget.spec_json) if widget.spec_json else {}
     
-    # 1. If Superset or DuckDB, simulate/execute fresh analytics query
-    if datasource.get("type") in ["mcp_superset", "superset"]:
-        # When refreshing Superset headless BI metrics, update with latest latency/query counts
-        import random
-        if "series" in spec and isinstance(spec["series"], list):
-            for s in spec["series"]:
-                if "data" in s and isinstance(s["data"], list) and len(s["data"]) > 0:
-                    # Apply a minor realistic live telemetry jitter (+/- 5%)
-                    s["data"] = [round(v * random.uniform(0.96, 1.05), 1) if isinstance(v, (int, float)) else v for v in s["data"]]
-    
-    # 2. If GitHub MCP / repo review, update findings or commit activity
-    elif datasource.get("type") in ["mcp_github", "github"]:
-        if spec.get("type") == "text_audit":
-            spec["status"] = "🟢 PR SLAs Monitored (Synced Just Now)"
-        elif "series" in spec and isinstance(spec["series"], list):
-            for s in spec["series"]:
-                if s.get("type") == "bar" and "data" in s and isinstance(s["data"], list):
-                    import random
-                    s["data"] = [round(max(1.0, v + random.uniform(-1.2, 1.5)), 1) for v in s["data"]]
+    # Execute real analytics query against DuckDB / Superset dataset
+    query_to_run = datasource.get("query") or datasource.get("sql")
+    ds_type = (datasource.get("type") or "").lower()
 
-    import datetime
+    if not query_to_run:
+        if "pr-velocity" in widget.widget_id or "velocity" in widget.widget_id or "github" in ds_type:
+            query_to_run = "SELECT repo, count(*) as count, round(avg(lines_added), 1) as avg_diff FROM github_commits GROUP BY 1 ORDER BY 1"
+        elif "commit" in widget.widget_id or "churn" in widget.widget_id:
+            query_to_run = "SELECT author, sum(lines_added) as added, sum(lines_deleted) as deleted FROM github_commits GROUP BY 1 ORDER BY 1"
+        elif "superset" in ds_type or "bi" in widget.widget_id or "latency" in widget.widget_id:
+            query_to_run = "SELECT database_name, latency_ms, cache_hit_pct FROM superset_query_performance ORDER BY latency_ms DESC"
+        elif "correlation" in widget.widget_id or "impact" in widget.widget_id:
+            query_to_run = "SELECT metric_date, lines_added, p95_latency_ms FROM engineering_impact_daily ORDER BY metric_date ASC"
+
+    if query_to_run:
+        try:
+            filter_scope = spec.get("filter_scope", "global")
+            q_res = duckdb_service.execute_widget_query(query_to_run, filter_scope=filter_scope)
+            data_rows = q_res.get("data", [])
+            cols = q_res.get("columns", [])
+            if data_rows and cols:
+                archetype = spec.get("archetype") or spec.get("visual_spec", {}).get("archetype")
+                if not archetype:
+                    series = spec.get("series", [])
+                    if series and isinstance(series, list) and len(series) > 0:
+                        s_type = series[0].get("type", "")
+                        if s_type in ("pie", "donut"):
+                            archetype = "pie_donut"
+                        elif s_type == "heatmap":
+                            archetype = "heatmap"
+                        elif s_type in ("bar", "line"):
+                            archetype = s_type
+                    if "table_data" in spec:
+                        archetype = "table"
+                    elif "kpi_data" in spec:
+                        archetype = "kpi_metric"
+                    if not archetype:
+                        archetype = "bar"
+
+                title = spec.get("title", {}).get("text", widget.title) if isinstance(spec.get("title"), dict) else widget.title
+                subtitle = spec.get("title", {}).get("subtext", "") if isinstance(spec.get("title"), dict) else ""
+                spec = compile_widget_spec(
+                    archetype=archetype,
+                    title=title,
+                    subtitle=subtitle,
+                    sql=query_to_run,
+                    columns=cols,
+                    rows=data_rows,
+                    visual_options=spec.get("visual_spec", {}),
+                    existing_spec=spec,
+                    filter_scope=filter_scope
+                )
+                datasource["query"] = query_to_run
+        except Exception as e:
+            logger.warning(f"Live DuckDB query refresh error for widget '{widget_id}': {e}")
+
+    if spec.get("type") == "text_audit":
+        spec["status"] = "🟢 Real-time Telemetry Synced with DuckDB"
+        spec["last_sync"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
     widget.updated_at = datetime.datetime.utcnow()
     widget.spec_json = json.dumps(spec)
     db.commit()
@@ -227,8 +386,273 @@ def refresh_widget(dashboard_id: str, widget_id: str, current_user: User = Depen
         "updated_at": widget.updated_at.isoformat()
     }
 
+@router.post("/{dashboard_id}/refresh")
+def refresh_dashboard(
+    dashboard_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
+    # 1. Sync bound local repositories or all registered repositories
+    from backend.app.models import LocalRepository
+    from backend.app.services.git_service import git_service
+
+    synced_repos = []
+    bound_sources = json.loads(dash.datasources_json) if dash.datasources_json else []
+    target_repo_ids = [s.get("id") for s in bound_sources if s.get("type") in ("git", "repo")]
+
+    repo_query = db.query(LocalRepository)
+    if target_repo_ids:
+        repo_query = repo_query.filter(LocalRepository.id.in_(target_repo_ids))
+    repos_to_sync = repo_query.all()
+
+    for r in repos_to_sync:
+        try:
+            sync_res = git_service.sync_repository(r.local_path, r.default_branch, r.remote_url)
+            r.last_synced_at = datetime.datetime.utcnow()
+            synced_repos.append({
+                "id": r.id,
+                "name": r.name,
+                "head_sha": sync_res.get("head_sha", ""),
+                "commit_count": sync_res.get("commit_count", 0),
+                "ingested_commits": sync_res.get("ingested_commits", 0)
+            })
+        except Exception as e:
+            logger.warning(f"Error syncing repo '{r.name}': {e}")
+    db.commit()
+
+    # 2. Refresh each widget on this dashboard
+    widgets = db.query(DashboardWidget).filter(DashboardWidget.dashboard_id == dashboard_id).all()
+    refreshed_widgets = []
+
+    for widget in widgets:
+        datasource = json.loads(widget.datasource_json) if widget.datasource_json else {}
+        spec = json.loads(widget.spec_json) if widget.spec_json else {}
+        query_to_run = datasource.get("query") or datasource.get("sql")
+        ds_type = (datasource.get("type") or "").lower()
+
+        if not query_to_run:
+            if "pr-velocity" in widget.widget_id or "velocity" in widget.widget_id or "github" in ds_type:
+                query_to_run = "SELECT repo, count(*) as count, round(avg(lines_added), 1) as avg_diff FROM github_commits GROUP BY 1 ORDER BY 1"
+            elif "commit" in widget.widget_id or "churn" in widget.widget_id:
+                query_to_run = "SELECT author, sum(lines_added) as added, sum(lines_deleted) as deleted FROM github_commits GROUP BY 1 ORDER BY 1"
+            elif "superset" in ds_type or "bi" in widget.widget_id or "latency" in widget.widget_id:
+                query_to_run = "SELECT database_name, latency_ms, cache_hit_pct FROM superset_query_performance ORDER BY latency_ms DESC"
+            elif "correlation" in widget.widget_id or "impact" in widget.widget_id:
+                query_to_run = "SELECT metric_date, lines_added, p95_latency_ms FROM engineering_impact_daily ORDER BY metric_date ASC"
+
+        if query_to_run:
+            try:
+                filter_scope = spec.get("filter_scope", "global")
+                q_res = duckdb_service.execute_widget_query(query_to_run, filter_scope=filter_scope)
+                data_rows = q_res.get("data", [])
+                cols = q_res.get("columns", [])
+                if data_rows and cols:
+                    archetype = spec.get("archetype") or spec.get("visual_spec", {}).get("archetype")
+                    if not archetype:
+                        series = spec.get("series", [])
+                        if series and isinstance(series, list) and len(series) > 0:
+                            s_type = series[0].get("type", "")
+                            if s_type in ("pie", "donut"):
+                                archetype = "pie_donut"
+                            elif s_type == "heatmap":
+                                archetype = "heatmap"
+                            elif s_type in ("bar", "line"):
+                                archetype = s_type
+                        if "table_data" in spec:
+                            archetype = "table"
+                        elif "kpi_data" in spec:
+                            archetype = "kpi_metric"
+                        if not archetype:
+                            archetype = "bar"
+
+                    title = spec.get("title", {}).get("text", widget.title) if isinstance(spec.get("title"), dict) else widget.title
+                    subtitle = spec.get("title", {}).get("subtext", "") if isinstance(spec.get("title"), dict) else ""
+                    spec = compile_widget_spec(
+                        archetype=archetype,
+                        title=title,
+                        subtitle=subtitle,
+                        sql=query_to_run,
+                        columns=cols,
+                        rows=data_rows,
+                        visual_options=spec.get("visual_spec", {}),
+                        existing_spec=spec,
+                        filter_scope=filter_scope
+                    )
+                    datasource["query"] = query_to_run
+            except Exception as e:
+                logger.warning(f"Error querying DuckDB for widget '{widget.widget_id}': {e}")
+
+        if spec.get("type") == "text_audit":
+            spec["status"] = "🟢 Real-time Telemetry Synced with DuckDB"
+            spec["last_sync"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        widget.updated_at = datetime.datetime.utcnow()
+        widget.spec_json = json.dumps(spec)
+        refreshed_widgets.append({
+            "id": widget.widget_id,
+            "title": widget.title,
+            "widget_type": widget.widget_type,
+            "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+            "spec": spec,
+            "datasource": datasource,
+            "updated_at": widget.updated_at.isoformat()
+        })
+    db.commit()
+
+    return {
+        "success": True,
+        "message": f"Dashboard refreshed: {len(synced_repos)} repositories synced and {len(refreshed_widgets)} widgets updated.",
+        "synced_repos": synced_repos,
+        "refreshed_widgets_count": len(refreshed_widgets),
+        "widgets": refreshed_widgets
+    }
+
+@router.post("/{dashboard_id}/evaluate")
+def evaluate_dashboard(
+    dashboard_id: str,
+    payload: DashboardEvaluatePayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
+    widgets_query = db.query(DashboardWidget).filter(DashboardWidget.dashboard_id == dashboard_id)
+    if payload.widget_ids:
+        widgets_query = widgets_query.filter(DashboardWidget.widget_id.in_(payload.widget_ids))
+    widgets = widgets_query.all()
+
+    evaluated_widgets = []
+    for widget in widgets:
+        datasource = json.loads(widget.datasource_json) if widget.datasource_json else {}
+        spec = json.loads(widget.spec_json) if widget.spec_json else {}
+
+        if widget.widget_type in ("filter_controller", "react_app", "filter") or spec.get("type") in ("filter_controller", "react_app", "single_filter"):
+            evaluated_widgets.append({
+                "id": widget.widget_id,
+                "title": widget.title,
+                "widget_type": widget.widget_type,
+                "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+                "spec": spec,
+                "datasource": datasource,
+                "updated_at": widget.updated_at.isoformat() if widget.updated_at else datetime.datetime.utcnow().isoformat()
+            })
+            continue
+
+        query_to_run = datasource.get("query") or datasource.get("sql") or spec.get("sql") or spec.get("query_spec", {}).get("sql")
+        ds_type = (datasource.get("type") or "").lower()
+
+        if not query_to_run:
+            if "pr-velocity" in widget.widget_id or "velocity" in widget.widget_id or "github" in ds_type:
+                query_to_run = "SELECT repo, count(*) as count, round(avg(lines_added), 1) as avg_diff FROM github_commits GROUP BY 1 ORDER BY 1"
+            elif "commit" in widget.widget_id or "churn" in widget.widget_id:
+                query_to_run = "SELECT author, sum(lines_added) as added, sum(lines_deleted) as deleted FROM github_commits GROUP BY 1 ORDER BY 1"
+            elif "superset" in ds_type or "bi" in widget.widget_id or "latency" in widget.widget_id:
+                query_to_run = "SELECT database_name, latency_ms, cache_hit_pct FROM superset_query_performance ORDER BY latency_ms DESC"
+            elif "correlation" in widget.widget_id or "impact" in widget.widget_id:
+                query_to_run = "SELECT metric_date, lines_added, p95_latency_ms FROM engineering_impact_daily ORDER BY metric_date ASC"
+
+        new_spec = spec
+        if query_to_run:
+            try:
+                filter_scope = spec.get("filter_scope", "global")
+                # Scope filters specifically if target_widget_ids are bound to specific charts
+                widget_filters = dict(payload.filters)
+                for fw in widgets:
+                    if fw.widget_type == "filter" or (fw.spec_json and "single_filter" in fw.spec_json):
+                        fw_spec = json.loads(fw.spec_json) if fw.spec_json else {}
+                        targets = fw_spec.get("target_widget_ids", ["all"])
+                        if targets and "all" not in targets and widget.widget_id not in targets:
+                            raw_k = str(fw_spec.get("dimension") or fw_spec.get("label") or fw.title).lower()
+                            for k in list(widget_filters.keys()):
+                                if k.lower() in raw_k or raw_k in k.lower():
+                                    widget_filters.pop(k, None)
+                            if "author" in raw_k or "committer" in raw_k:
+                                widget_filters.pop("author", None)
+                                widget_filters.pop("committer", None)
+                            elif "repo" in raw_k:
+                                widget_filters.pop("repo", None)
+                            elif "branch" in raw_k:
+                                widget_filters.pop("branch", None)
+                            elif "type" in raw_k or "commit_type" in raw_k:
+                                widget_filters.pop("commit_type", None)
+
+                q_res = duckdb_service.execute_widget_query(query_to_run, filters=widget_filters, filter_scope=filter_scope)
+                data_rows = q_res.get("data", [])
+                cols = q_res.get("columns", [])
+
+                archetype = spec.get("archetype") or spec.get("visual_spec", {}).get("archetype")
+                if not archetype:
+                    series = spec.get("series", [])
+                    if series and isinstance(series, list) and len(series) > 0:
+                        s_type = series[0].get("type", "")
+                        if s_type in ("pie", "donut"):
+                            archetype = "pie_donut"
+                        elif s_type == "heatmap":
+                            archetype = "heatmap"
+                        elif s_type in ("bar", "line"):
+                            archetype = s_type
+                    if "table_data" in spec:
+                        archetype = "table"
+                    elif "kpi_data" in spec:
+                        archetype = "kpi_metric"
+                    if not archetype:
+                        archetype = "bar"
+
+                active_filters = {k: v for k, v in widget_filters.items() if v and str(v).lower() not in ("all", "all repositories", "none")}
+                subtext = f"Scope: {', '.join(f'{k}={v}' for k, v in active_filters.items())}" if active_filters and filter_scope != "none" else (spec.get("title", {}).get("subtext", "") if isinstance(spec.get("title"), dict) else "")
+
+                new_spec = compile_widget_spec(
+                    archetype=archetype,
+                    title=spec.get("title", {}).get("text", widget.title) if isinstance(spec.get("title"), dict) else widget.title,
+                    subtitle=subtext,
+                    sql=query_to_run,
+                    columns=cols,
+                    rows=data_rows,
+                    visual_options=spec.get("visual_spec", {}),
+                    existing_spec=spec,
+                    filter_scope=filter_scope
+                )
+                datasource["query"] = query_to_run
+            except Exception as e:
+                logger.warning(f"Error evaluating query for widget '{widget.widget_id}': {e}")
+
+        evaluated_widgets.append({
+            "id": widget.widget_id,
+            "title": widget.title,
+            "widget_type": widget.widget_type,
+            "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+            "spec": new_spec,
+            "datasource": datasource,
+            "updated_at": widget.updated_at.isoformat() if widget.updated_at else datetime.datetime.utcnow().isoformat()
+        })
+
+    return {
+        "success": True,
+        "filters": payload.filters,
+        "widgets": evaluated_widgets,
+        "evaluated_count": len(evaluated_widgets)
+    }
+
 @router.delete("/{dashboard_id}/widgets/{widget_id}")
 def delete_widget(dashboard_id: str, widget_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    if dash.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized to delete widgets on this dashboard")
+
     widget = db.query(DashboardWidget).filter(
         DashboardWidget.dashboard_id == dashboard_id,
         DashboardWidget.widget_id == widget_id
@@ -248,8 +672,18 @@ class CommentCreatePayload(BaseModel):
     pos_x: int = 50
     pos_y: int = 50
 
+class CommentReplyPayload(BaseModel):
+    content: str
+
 @router.get("/{dashboard_id}/comments")
 def list_comments(dashboard_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
     comments = db.query(DashboardComment).filter(
         DashboardComment.dashboard_id == dashboard_id
     ).order_by(DashboardComment.created_at.asc()).all()
@@ -260,9 +694,11 @@ def list_comments(dashboard_id: str, current_user: User = Depends(get_current_us
             "widget_id": c.widget_id,
             "user_email": c.user_email,
             "content": c.content,
+            "replies": json.loads(c.replies_json) if getattr(c, "replies_json", None) else [],
             "pos_x": c.pos_x,
             "pos_y": c.pos_y,
             "is_resolved": c.is_resolved,
+            "chat_session_id": c.chat_session_id or f"pin-{c.dashboard_id}-{c.id}",
             "created_at": c.created_at.isoformat() if c.created_at else None
         }
         for c in comments
@@ -270,16 +706,42 @@ def list_comments(dashboard_id: str, current_user: User = Depends(get_current_us
 
 @router.post("/{dashboard_id}/comments")
 def create_comment(dashboard_id: str, payload: CommentCreatePayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
     comment = DashboardComment(
         dashboard_id=dashboard_id,
         widget_id=payload.widget_id,
         user_email=current_user.email,
         content=payload.content,
+        replies_json="[]",
         pos_x=payload.pos_x,
         pos_y=payload.pos_y,
         is_resolved=False
     )
     db.add(comment)
+    db.flush()
+
+    # Automatically provision a dedicated localized ChatSession for this spatial pin
+    session_id = f"pin-{dashboard_id}-{comment.id}"
+    comment.chat_session_id = session_id
+    existing_session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+    if not existing_session:
+        chat_session = ChatSession(
+            id=session_id,
+            user_id=current_user.id,
+            title=f"Pin #{comment.id}: {comment.content[:24]}",
+            dashboard_id=dashboard_id,
+            scope="pin",
+            pin_id=comment.id,
+            widget_id=comment.widget_id
+        )
+        db.add(chat_session)
+
     db.commit()
     db.refresh(comment)
     return {
@@ -288,14 +750,63 @@ def create_comment(dashboard_id: str, payload: CommentCreatePayload, current_use
         "widget_id": comment.widget_id,
         "user_email": comment.user_email,
         "content": comment.content,
+        "replies": [],
         "pos_x": comment.pos_x,
         "pos_y": comment.pos_y,
         "is_resolved": comment.is_resolved,
+        "chat_session_id": comment.chat_session_id,
         "created_at": comment.created_at.isoformat()
+    }
+
+@router.post("/{dashboard_id}/comments/{comment_id}/replies")
+def add_comment_reply(dashboard_id: str, comment_id: int, payload: CommentReplyPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
+    comment = db.query(DashboardComment).filter(
+        DashboardComment.dashboard_id == dashboard_id,
+        DashboardComment.id == comment_id
+    ).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment pin not found")
+
+    replies = []
+    if getattr(comment, "replies_json", None):
+        try:
+            replies = json.loads(comment.replies_json)
+        except Exception:
+            replies = []
+
+    new_reply = {
+        "id": f"rep-{int(datetime.datetime.utcnow().timestamp() * 1000)}",
+        "user_email": current_user.email,
+        "content": payload.content.strip(),
+        "created_at": datetime.datetime.utcnow().isoformat()
+    }
+    replies.append(new_reply)
+    comment.replies_json = json.dumps(replies)
+    comment.is_resolved = False
+    db.commit()
+
+    return {
+        "id": comment.id,
+        "replies": replies,
+        "is_resolved": comment.is_resolved
     }
 
 @router.put("/{dashboard_id}/comments/{comment_id}/resolve")
 def toggle_resolve_comment(dashboard_id: str, comment_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
     comment = db.query(DashboardComment).filter(
         DashboardComment.dashboard_id == dashboard_id,
         DashboardComment.id == comment_id
@@ -306,14 +817,64 @@ def toggle_resolve_comment(dashboard_id: str, comment_id: int, current_user: Use
     db.commit()
     return {"id": comment.id, "is_resolved": comment.is_resolved}
 
+@router.get("/{dashboard_id}/comments/{comment_id}/messages")
+def list_comment_messages(dashboard_id: str, comment_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(
+        Dashboard.id == dashboard_id,
+        (Dashboard.user_id == current_user.id) | (Dashboard.is_public == True) | (current_user.role == "admin")
+    ).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
+    comment = db.query(DashboardComment).filter(
+        DashboardComment.dashboard_id == dashboard_id,
+        DashboardComment.id == comment_id
+    ).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment pin not found")
+
+    session_id = comment.chat_session_id or f"pin-{dashboard_id}-{comment_id}"
+    messages = db.query(ChatMessage).filter(
+        ChatMessage.session_id == session_id
+    ).order_by(ChatMessage.created_at.asc()).all()
+
+    return [
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "thoughts": m.thoughts,
+            "tool_calls": json.loads(m.tool_calls_json) if m.tool_calls_json else None,
+            "created_at": m.created_at.isoformat() if m.created_at else None
+        }
+        for m in messages
+    ]
+
 @router.delete("/{dashboard_id}/comments/{comment_id}")
 def delete_comment(dashboard_id: str, comment_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+
     comment = db.query(DashboardComment).filter(
         DashboardComment.dashboard_id == dashboard_id,
         DashboardComment.id == comment_id
     ).first()
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
+
+    # Only comment author, dashboard owner, or admin can delete
+    if comment.user_email != current_user.email and dash.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized to delete this comment")
+
+    # Clean up associated pin chat session if present
+    target_session_id = comment.chat_session_id or f"pin-{dashboard_id}-{comment_id}"
+    pin_session = db.query(ChatSession).filter(
+        (ChatSession.id == target_session_id) | (ChatSession.pin_id == comment_id)
+    ).first()
+    if pin_session:
+        db.delete(pin_session)
+
     db.delete(comment)
     db.commit()
     return {"success": True, "message": "Comment removed"}

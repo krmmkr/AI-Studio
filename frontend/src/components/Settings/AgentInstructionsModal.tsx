@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AgentPersona } from '../../types';
 import { agentApi } from '../../api/client';
-import { X, Bot, Save, CheckCircle, Plus, Trash2, GitPullRequest, BarChart3, Code2 } from 'lucide-react';
+import { X, Bot, Save, CheckCircle, Plus, Trash2, Maximize2, Minimize2 } from 'lucide-react';
 
 interface AgentInstructionsModalProps {
   isOpen: boolean;
@@ -21,6 +21,7 @@ export const AgentInstructionsModal: React.FC<AgentInstructionsModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
 
   // New agent form
   const [newAgentName, setNewAgentName] = useState('');
@@ -90,8 +91,12 @@ export const AgentInstructionsModal: React.FC<AgentInstructionsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fadeIn">
-      <div className="bg-m3-surface rounded-4xl max-w-3xl w-full p-6 shadow-2xl border border-m3-outline-variant/30 flex flex-col max-h-[90vh]">
+    <div className={`fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-xs animate-fadeIn ${isMaximized ? 'p-0' : 'p-4'}`}>
+      <div className={`bg-m3-surface shadow-2xl border border-m3-outline-variant/30 flex flex-col transition-all duration-200 ${
+        isMaximized
+          ? 'w-screen h-screen rounded-none p-6'
+          : 'rounded-4xl w-[92vw] max-w-4xl h-[84vh] min-h-[620px] p-6'
+      }`}>
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-m3-outline-variant/20 shrink-0">
           <div className="flex items-center gap-2.5">
@@ -105,52 +110,57 @@ export const AgentInstructionsModal: React.FC<AgentInstructionsModalProps> = ({
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-full hover:bg-m3-surface-container-high text-m3-on-surface-variant transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setIsMaximized(!isMaximized)}
+              title={isMaximized ? 'Restore window size' : 'Maximize Fullscreen'}
+              className="p-2 rounded-full hover:bg-m3-surface-container-high text-m3-on-surface-variant hover:text-m3-on-surface transition-colors"
+            >
+              {isMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-full hover:bg-m3-surface-container-high text-m3-on-surface-variant transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* Tab & Action Bar */}
-        <div className="flex items-center justify-between gap-2 my-4 flex-wrap">
-          <div className="flex gap-1.5 bg-m3-surface-container-low p-1.5 rounded-full flex-wrap">
-            {personas.map((persona) => (
-              <button
-                key={persona.id}
-                onClick={() => {
-                  setSelectedAgentId(persona.id);
-                  setIsCreating(false);
-                }}
-                className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                  selectedAgentId === persona.id && !isCreating
-                    ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                    : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-                }`}
-              >
-                {persona.id === 'github-agent' ? (
-                  <GitPullRequest className="w-3.5 h-3.5" />
-                ) : persona.id === 'superset-agent' ? (
-                  <BarChart3 className="w-3.5 h-3.5" />
-                ) : (
-                  <Code2 className="w-3.5 h-3.5" />
-                )}
-                {persona.name}
-              </button>
-            ))}
+        {/* Agent Persona Dropdown Selector & Action Bar */}
+        <div className="flex items-center justify-between gap-3 my-4 flex-wrap shrink-0">
+          <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
+            <label className="text-xs font-semibold text-m3-on-surface-variant shrink-0">
+              Select Agent:
+            </label>
+            <select
+              value={selectedAgentId}
+              onChange={(e) => {
+                setIsCreating(false);
+                setSelectedAgentId(e.target.value);
+              }}
+              className="flex-1 max-w-md px-3.5 py-2 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs font-semibold text-m3-on-surface outline-none focus:border-m3-primary cursor-pointer"
+            >
+              {personas.map((persona) => (
+                <option key={persona.id} value={persona.id}>
+                  {persona.name} — {persona.is_default ? 'Built-in' : 'Custom'}
+                </option>
+              ))}
+            </select>
           </div>
 
           <button
+            type="button"
             onClick={() => setIsCreating(!isCreating)}
-            className={`inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
+            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all cursor-pointer ${
               isCreating
-                ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                : 'bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-on-surface'
+                ? 'bg-m3-surface-container-high text-m3-on-surface'
+                : 'bg-m3-primary text-m3-on-primary shadow-xs hover:opacity-90'
             }`}
           >
             <Plus className="w-3.5 h-3.5" />
-            New Agent
+            <span>{isCreating ? 'Back to Agent Editor' : 'New Agent'}</span>
           </button>
         </div>
 

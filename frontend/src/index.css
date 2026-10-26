@@ -93,6 +93,14 @@ select optgroup {
   color: var(--color-on-surface, #1D1B20);
 }
 
+/* Subtle, low-contrast placeholders across all inputs and textareas */
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-on-surface-variant) !important;
+  opacity: 0.34 !important;
+  font-weight: 400;
+}
+
 /* Custom scrollbars matching Material 3 pill shape */
 ::-webkit-scrollbar {
   width: 6px;

@@ -1,0 +1,62 @@
+[
+  {
+    "module": "apps/agor-daemon",
+    "total_churn": 38969,
+    "commits": 440,
+    "files": 11,
+    "max_contributors": 9,
+    "dominant_owner": "Maxime Beauchemin",
+    "churn_share_pct": 62.3,
+    "avg_churn_per_commit": 89.0
+  },
+  {
+    "module": "root",
+    "total_churn": 10118,
+    "commits": 36,
+    "files": 1,
+    "max_contributors": 8,
+    "dominant_owner": "Maxime Beauchemin",
+    "churn_share_pct": 16.2,
+    "avg_churn_per_commit": 281.0
+  },
+  {
+    "module": "packages/core",
+    "total_churn": 7056,
+    "commits": 279,
+    "files": 8,
+    "max_contributors": 7,
+    "dominant_owner": "Maxime Beauchemin",
+    "churn_share_pct": 11.3,
+    "avg_churn_per_commit": 25.0
+  },
+  {
+    "module": "apps/agor-ui",
+    "total_churn": 5417,
+    "commits": 115,
+    "files": 3,
+    "max_contributors": 8,
+    "dominant_owner": "Maxime Beauchemin",
+    "churn_share_pct": 8.7,
+    "avg_churn_per_commit": 47.0
+  },
+  {
+    "module": "apps/agor-docs",
+    "total_churn": 882,
+    "commits": 29,
+    "files": 1,
+    "max_contributors": 6,
+    "dominant_owner": "Maxime Beauchemin",
+    "churn_share_pct": 1.4,
+    "avg_churn_per_commit": 30.0
+  },
+  {
+    "module": "packages/agor-live",
+    "total_churn": 133,
+    "commits": 32,
+    "files": 1,
+    "max_contributors": 5,
+    "dominant_owner": "Maxime Beauchemin",
+    "churn_share_pct": 0.2,
+    "avg_churn_per_commit": 4.0
+  }
+]

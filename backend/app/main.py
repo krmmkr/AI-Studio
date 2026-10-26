@@ -4,8 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from backend.app.config import STATIC_DIR
-from backend.app.database import engine, Base, SessionLocal
+from backend.app.config import STATIC_DIR, CORS_ALLOWED_ORIGINS, ENVIRONMENT
+from backend.app.database import engine, Base, SessionLocal, check_db_connection, ensure_db_schema
 from backend.app.services.seed_data import seed_database
 from backend.app.routers import (
     auth_routes,
@@ -21,13 +21,19 @@ from backend.app.routers import (
 async def lifespan(app: FastAPI):
     # Startup: ensure tables and seed database
     Base.metadata.create_all(bind=engine)
+    ensure_db_schema()
     db = SessionLocal()
     try:
         seed_database(db)
     finally:
         db.close()
     yield
-    # Shutdown logic (if any)
+    # Graceful shutdown: cleanup any active OpenCode daemon and child execution processes
+    try:
+        from backend.app.services.agents.opencode_runner import _OPENCODE_SERVER
+        await _OPENCODE_SERVER.close()
+    except Exception:
+        pass
 
 app = FastAPI(
     title="Antigravity Cockpit API",
@@ -36,12 +42,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Middleware (allows local dev and credentials)
+# CORS Middleware configured for production origin isolation
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -55,8 +61,23 @@ app.include_router(duckdb_routes.router)
 app.include_router(agent_routes.router)
 
 @app.get("/api/health")
+@app.get("/healthz")
 async def health_check():
-    return {"status": "ok", "service": "Antigravity Cockpit"}
+    """Liveness probe: verifies the web service process is active."""
+    return {"status": "ok", "service": "Antigravity Cockpit", "environment": ENVIRONMENT}
+
+@app.get("/readyz")
+async def readiness_check():
+    """Readiness probe: verifies backend service and database connectivity."""
+    db_ok = check_db_connection()
+    if not db_ok:
+        from fastapi import Response, status
+        return Response(
+            content='{"status": "unhealthy", "database": "disconnected"}',
+            media_type="application/json",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    return {"status": "ready", "database": "connected", "environment": ENVIRONMENT}
 
 # Serve compiled frontend if present
 index_file = STATIC_DIR / "index.html"

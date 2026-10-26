@@ -1,12 +1,37 @@
 import datetime
+import base64
+import hashlib
 import bcrypt
 import jwt
+from cryptography.fernet import Fernet
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from backend.app.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRATION_MINUTES
 from backend.app.database import get_db
 from backend.app.models import User
+
+# Derive a consistent 32-byte urlsafe base64 key from JWT_SECRET for field-level encryption
+_fernet_key = base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET.encode("utf-8")).digest())
+_cipher = Fernet(_fernet_key)
+
+def encrypt_secret(plain_text: str | None) -> str | None:
+    """Encrypts a sensitive string (e.g. MCP auth header or API key) for safe storage."""
+    if not plain_text:
+        return None
+    try:
+        return _cipher.encrypt(plain_text.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return plain_text
+
+def decrypt_secret(cipher_text: str | None) -> str | None:
+    """Decrypts a stored ciphertext string. Gracefully returns plaintext if not encrypted."""
+    if not cipher_text:
+        return None
+    try:
+        return _cipher.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return cipher_text
 
 security = HTTPBearer(auto_error=False)
 
@@ -22,10 +47,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: datetime.timedelta | None = None) -> str:
     to_encode = data.copy()
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
     if expires_delta:
-        expire = datetime.datetime.utcnow() + expires_delta
+        expire = now_utc + expires_delta
     else:
-        expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=JWT_EXPIRATION_MINUTES)
+        expire = now_utc + datetime.timedelta(minutes=JWT_EXPIRATION_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return encoded_jwt
@@ -58,7 +84,12 @@ def get_current_user(
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
     
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    try:
+        user_id_int = int(user_id)
+        user = db.query(User).filter(User.id == user_id_int).first()
+    except (ValueError, TypeError):
+        user = db.query(User).filter(User.email == str(user_id)).first()
+
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user

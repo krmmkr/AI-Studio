@@ -1,13 +1,82 @@
+import datetime
 import json
+import logging
 import uuid
 from sqlalchemy.orm import Session
 from backend.app.auth import hash_password
-from backend.app.config import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
+from backend.app.config import DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD, SEED_MOCK_DATA, REPOS_DIR
 from backend.app.models import User, MCPConfig, Dashboard, DashboardWidget, AgentPersona, LocalRepository
+from backend.app.services.git_service import git_service
 
-def seed_database(db: Session):
-    """Seed initial user, MCP tools, and default dynamic dashboard widgets if not present."""
-    # 1. Admin user
+logger = logging.getLogger("seed_data")
+
+
+def sync_real_disk_repositories(db: Session, remove_fake_if_clean: bool = True):
+    """Discovers real cloned repositories in REPOS_DIR, registers them, and ingests their commits into DuckDB."""
+    if remove_fake_if_clean:
+        from backend.app.models import DashboardComment
+        fake_repos = (
+            db.query(LocalRepository)
+            .filter(LocalRepository.remote_url.like("%github.com/company/%"))
+            .all()
+        )
+        for fr in fake_repos:
+            if not git_service.is_repo_cloned(fr.local_path):
+                db.delete(fr)
+
+        # Remove duplicate .git-suffixed rows when sanitized name exists
+        for r in db.query(LocalRepository).filter(LocalRepository.name.like("%.git")).all():
+            clean = git_service.sanitize_repo_name(r.name)
+            if clean != r.name:
+                db.delete(r)
+
+        mock_dash_ids = ["default-cockpit", "pr-velocity-audit"]
+        db.query(DashboardComment).filter(DashboardComment.dashboard_id.in_(mock_dash_ids)).delete(synchronize_session=False)
+        db.query(DashboardWidget).filter(DashboardWidget.dashboard_id.in_(mock_dash_ids)).delete(synchronize_session=False)
+        db.query(Dashboard).filter(Dashboard.id.in_(mock_dash_ids)).delete(synchronize_session=False)
+        db.query(MCPConfig).filter(MCPConfig.url.like("%.internal%")).delete(synchronize_session=False)
+        db.commit()
+
+    if not REPOS_DIR.exists():
+        return
+
+    for entry in sorted(REPOS_DIR.iterdir()):
+        if not entry.is_dir() or not git_service.is_repo_cloned(str(entry)):
+            continue
+        safe_name = git_service.sanitize_repo_name(entry.name)
+        rc, remote_out, _ = git_service._run_git(["config", "--get", "remote.origin.url"], cwd=entry)
+        remote_url = remote_out.strip() if rc == 0 and remote_out.strip() else f"local://{entry.name}"
+
+        try:
+            meta = git_service.extract_repo_metadata(entry, safe_name)
+        except Exception as e:
+            logger.warning(f"Failed to extract metadata for {entry}: {e}")
+            meta = {"branch": "main"}
+
+        existing = db.query(LocalRepository).filter(LocalRepository.name == safe_name).first()
+        if existing:
+            existing.local_path = str(entry.resolve())
+            if remote_url and not existing.remote_url:
+                existing.remote_url = remote_url
+            existing.default_branch = meta.get("branch") or existing.default_branch or "main"
+            existing.last_synced_at = datetime.datetime.utcnow()
+        else:
+            db.add(
+                LocalRepository(
+                    name=safe_name,
+                    remote_url=remote_url,
+                    local_path=str(entry.resolve()),
+                    clone_type="full",
+                    default_branch=meta.get("branch", "main"),
+                    last_synced_at=datetime.datetime.utcnow(),
+                )
+            )
+    db.commit()
+
+
+def seed_database(db: Session, force_mock: bool = False):
+    """Seed initial user, MCP tools, and default dynamic dashboard widgets if configured."""
+    # 1. Admin user (Always created)
     admin = db.query(User).filter(User.email == DEFAULT_ADMIN_EMAIL).first()
     if not admin:
         admin = User(
@@ -19,6 +88,104 @@ def seed_database(db: Session):
         db.commit()
         db.refresh(admin)
 
+    # 2. Agent Personas (Always created so the agent has system instructions)
+    github_persona_instructions = (
+        "You are the GitHub Engineering & Codebase Intelligence Specialist.\n\n"
+        "Key Responsibilities:\n"
+        "1. Dynamically inspect cloned GitHub repositories on disk (`local_data/repos/`) based on the user's exact request—including features/routes/components and who authored them, codebase issues/TODOs/FIXMEs and bugfix commits with authors, module ownership, AST complexity, or commit velocity.\n"
+        "2. Do NOT assume fixed `github_commits` or `github_contributors` tables exist. Instead, use `extract_repository_dataset_records` or `propose_duckdb_dataset(table_name=..., description=..., records=[...])` to dynamically propose custom DuckDB tables tailored to the data needed.\n"
+        "3. Communicate recommendations and architectural questions with `ask_user_confirmation` to give users clickable choice buttons directly in chat.\n"
+        "4. Emit clear, data-backed Apache ECharts visualization widgets (`upsert_chart_widget`) and engineering reports (`create_markdown_report_widget`) onto the dashboard canvas without repeating boilerplate text."
+    )
+    personas = db.query(AgentPersona).all()
+    if not personas:
+        github_agent = AgentPersona(
+            id="github-agent",
+            name="GitHub Intelligence Agent",
+            role_description="Specialist in codebase feature authorship, issue/tech-debt discovery, dynamic dataset creation, and repository analytics.",
+            icon="git-pull-request",
+            is_default=True,
+            system_instructions=github_persona_instructions,
+        )
+        superset_agent = AgentPersona(
+            id="superset-agent",
+            name="Superset Headless BI Agent",
+            role_description="Specialist in headless business intelligence, data catalog exploration, and dynamic analytical chart generation.",
+            icon="bar-chart-3",
+            is_default=False,
+            system_instructions=(
+                "You are the Superset Headless BI & Data Analytics Specialist.\n\n"
+                "Key Responsibilities:\n"
+                "1. Connect directly to Superset backend endpoints (`/api/v1/chart/data` and `/api/v1/sqllab/execute/`) via Superset MCP, completely skipping the Superset frontend.\n"
+                "2. Use the Data Catalog MCP to discover semantic tables, column schemas, and metrics glossary (`analytics.customer_transactions_daily`).\n"
+                "3. Formulate SQL slice queries to aggregate revenue, transaction volumes, user metrics, and query performance.\n"
+                "4. Project dynamic, interactive ECharts widgets directly onto the canvas with clear legends, axes, and responsive tooltips."
+            )
+        )
+        correlation_agent = AgentPersona(
+            id="correlation-agent",
+            name="Engineering Impact & ROI Agent",
+            role_description="Correlates GitHub commit velocity, PR sizes, and SLA turnaround with Superset query latencies, API reliability, and business ARR.",
+            icon="git-merge",
+            is_default=False,
+            system_instructions=(
+                "You are the Engineering Impact & Cross-Domain Correlation Specialist.\n\n"
+                "Key Responsibilities:\n"
+                "1. Connect software engineering activity (PR review turnaround, commit churn, diff bottlenecks) with operational and business KPIs (database query latency, system errors, ARR growth).\n"
+                "2. Query both GitHub datasets (`github_commits`) and Superset Headless BI metrics (`engineering_impact_daily`, `superset_query_performance`, `superset_saas_metrics`) to discover causal relationships.\n"
+                "3. Emit dual-axis Apache ECharts visualizations (e.g. Commit Churn on left bar axis vs P95 Query Latency on right line axis) so engineering leaders immediately see the business impact of architectural work.\n"
+                "4. When code changes reduce latencies or improve cache hit ratios, synthesize an impact audit card quantifying the engineering ROI."
+            )
+        )
+        db.add_all([github_agent, superset_agent, correlation_agent])
+        db.commit()
+    else:
+        gh_p = db.query(AgentPersona).filter(AgentPersona.id == "github-agent").first()
+        if gh_p and "github_commits" in (gh_p.system_instructions or ""):
+            gh_p.system_instructions = github_persona_instructions
+            gh_p.role_description = "Specialist in codebase feature authorship, issue/tech-debt discovery, dynamic dataset creation, and repository analytics."
+            db.commit()
+        corr = db.query(AgentPersona).filter(AgentPersona.id == "correlation-agent").first()
+        if not corr:
+            correlation_agent = AgentPersona(
+                id="correlation-agent",
+                name="Engineering Impact & ROI Agent",
+                role_description="Correlates GitHub commit velocity, PR sizes, and SLA turnaround with Superset query latencies, API reliability, and business ARR.",
+                icon="git-merge",
+                is_default=False,
+                system_instructions=(
+                    "You are the Engineering Impact & Cross-Domain Correlation Specialist.\n\n"
+                    "Key Responsibilities:\n"
+                    "1. Connect software engineering activity (PR review turnaround, commit churn, diff bottlenecks) with operational and business KPIs (database query latency, system errors, ARR growth).\n"
+                    "2. Query both GitHub datasets (`github_commits`) and Superset Headless BI metrics (`engineering_impact_daily`, `superset_query_performance`, `superset_saas_metrics`) to discover causal relationships.\n"
+                    "3. Emit dual-axis Apache ECharts visualizations (e.g. Commit Churn on left bar axis vs P95 Query Latency on right line axis) so engineering leaders immediately see the business impact of architectural work.\n"
+                    "4. When code changes reduce latencies or improve cache hit ratios, synthesize an impact audit card quantifying the engineering ROI."
+                )
+            )
+            db.add(correlation_agent)
+            db.commit()
+
+    # If mock data seeding is disabled (production or clean slate mode):
+    if not SEED_MOCK_DATA and not force_mock:
+        sync_real_disk_repositories(db, remove_fake_if_clean=True)
+        # Ensure a clean default empty dashboard exists for admin if they have none
+        existing_dash = db.query(Dashboard).filter(Dashboard.user_id == admin.id).first()
+        if not existing_dash:
+            clean_dash = Dashboard(
+                id=str(uuid.uuid4()),
+                user_id=admin.id,
+                title="GitHub Intelligence Workspace",
+                description="Analyze cloned GitHub repositories, materialize DuckDB datasets, and build interactive charts and reports.",
+                is_default=True,
+                is_public=False
+            )
+            db.add(clean_dash)
+            db.commit()
+        return
+
+    sync_real_disk_repositories(db, remove_fake_if_clean=False)
+
+    # --- SEED MOCK DATA (Only when SEED_MOCK_DATA=true) ---
     # Seed colleague user for public shared workspace demo
     colleague = db.query(User).filter(User.email == "sarah.lead@antigravity.io").first()
     if not colleague:
@@ -31,7 +198,7 @@ def seed_database(db: Session):
         db.commit()
         db.refresh(colleague)
 
-    # 2. Global MCPs
+    # 3. Global MCPs
     existing_mcps = db.query(MCPConfig).all()
     if not existing_mcps:
         global_superset = MCPConfig(
@@ -187,6 +354,22 @@ def seed_database(db: Session):
             ]
         }
 
+        w1_spec["sql"] = "SELECT repo, count(*) as pr_count, round(avg(lines_added), 1) as avg_diff FROM github_commits GROUP BY 1 ORDER BY 1"
+        w1_spec["archetype"] = "bar"
+        w1_spec["filter_scope"] = "global"
+
+        w2_spec["sql"] = "SELECT strftime(committed_at, '%H:00') as hour_slot, strftime(committed_at, '%a') as day_of_week, count(*) as commits FROM github_commits GROUP BY 1, 2 ORDER BY 1, 2"
+        w2_spec["archetype"] = "heatmap"
+        w2_spec["filter_scope"] = "global"
+
+        w3_spec["sql"] = "SELECT database_name, latency_ms, cache_hit_pct FROM superset_query_performance ORDER BY latency_ms DESC"
+        w3_spec["archetype"] = "dual_axis"
+        w3_spec["filter_scope"] = "global"
+
+        w4_spec["sql"] = "SELECT CASE WHEN (lines_added + lines_deleted) < 100 THEN 'Small (< 100 lines)' WHEN (lines_added + lines_deleted) < 400 THEN 'Medium (100 - 400 lines)' WHEN (lines_added + lines_deleted) < 1000 THEN 'Large (400 - 1000 lines)' ELSE 'Massive (> 1000 lines)' END as diff_tier, count(*) as count FROM github_commits GROUP BY 1 ORDER BY count DESC"
+        w4_spec["archetype"] = "pie_donut"
+        w4_spec["filter_scope"] = "global"
+
         w1 = DashboardWidget(
             dashboard_id=dash_id,
             widget_id="gh-pr-velocity",
@@ -194,7 +377,7 @@ def seed_database(db: Session):
             widget_type="echarts",
             grid_json=json.dumps({"x": 0, "y": 0, "w": 6, "h": 5}),
             spec_json=json.dumps(w1_spec),
-            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: /repos/main/pulls"})
+            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: /repos/main/pulls", "query": w1_spec["sql"]})
         )
         w2 = DashboardWidget(
             dashboard_id=dash_id,
@@ -203,7 +386,7 @@ def seed_database(db: Session):
             widget_type="echarts",
             grid_json=json.dumps({"x": 6, "y": 0, "w": 6, "h": 5}),
             spec_json=json.dumps(w2_spec),
-            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: /repos/main/commits"})
+            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: /repos/main/commits", "query": w2_spec["sql"]})
         )
         w3 = DashboardWidget(
             dashboard_id=dash_id,
@@ -212,7 +395,7 @@ def seed_database(db: Session):
             widget_type="echarts",
             grid_json=json.dumps({"x": 0, "y": 5, "w": 6, "h": 5}),
             spec_json=json.dumps(w3_spec),
-            datasource_json=json.dumps({"type": "mcp_superset", "label": "Superset 7.0 MCP: query_performance"})
+            datasource_json=json.dumps({"type": "mcp_superset", "label": "Superset 7.0 MCP: query_performance", "query": w3_spec["sql"]})
         )
         w4 = DashboardWidget(
             dashboard_id=dash_id,
@@ -221,7 +404,7 @@ def seed_database(db: Session):
             widget_type="echarts",
             grid_json=json.dumps({"x": 6, "y": 5, "w": 6, "h": 5}),
             spec_json=json.dumps(w4_spec),
-            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: code_review_audit"})
+            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: code_review_audit", "query": w4_spec["sql"]})
         )
 
         # Widget 5: Formatted Executive Code Review Audit Card
@@ -297,222 +480,20 @@ def seed_database(db: Session):
         db.add(pub_w1)
         db.commit()
 
-    # Seed Full Potential Showcase Dashboard
-    showcase_dash = db.query(Dashboard).filter(Dashboard.title == "Full Potential: React Apps & BI Showcase").first()
-    if not showcase_dash and admin:
-        sc_id = str(uuid.uuid4())
-        showcase_dash = Dashboard(
-            id=sc_id,
-            user_id=admin.id,
-            title="Full Potential: React Apps & BI Showcase",
-            description="Demonstrating the canvas capabilities: Stateful React micro-frontends, D3-style SVG DAGs, DuckDB tables, and ECharts side-by-side.",
-            is_default=False,
-            is_public=True
-        )
-        db.add(showcase_dash)
-        db.commit()
-
-        # Widget 1: Interactive Git Branch & Topology DAG Visualizer (React App)
-        sc_w1 = DashboardWidget(
-            dashboard_id=sc_id,
-            widget_id="react-git-dag",
-            title="Interactive Git Branch DAG & Cherry-Pick",
-            widget_type="react_app",
-            grid_json=json.dumps({"x": 0, "y": 0, "w": 6, "h": 5}),
-            spec_json=json.dumps({
-                "type": "git_topology",
-                "app_name": "Git DAG Visualizer",
-                "component_path": "src/widgets/GitDAG.tsx",
-                "description": "Interactive SVG commit graph with branch switching and one-click cherry-pick automation."
-            }),
-            datasource_json=json.dumps({"type": "local_repo", "label": "Local Git Repo: main-service"})
-        )
-
-        # Widget 2: Kubernetes Multi-Cluster Canary Traffic Shaper (React App)
-        sc_w2 = DashboardWidget(
-            dashboard_id=sc_id,
-            widget_id="react-canary-shaper",
-            title="Canary Traffic Shaper & Rollout Controller",
-            widget_type="react_app",
-            grid_json=json.dumps({"x": 6, "y": 0, "w": 6, "h": 5}),
-            spec_json=json.dumps({
-                "type": "pipeline_runner",
-                "app_name": "Canary Traffic Shaper",
-                "component_path": "src/widgets/CanaryShaper.tsx",
-                "description": "Interactive traffic shaping slider with live multi-region cluster health telemetry."
-            }),
-            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: CI/CD Pipeline"})
-        )
-
-        # Widget 3: Live SRE Incident Severity & On-Call Matrix (React App)
-        sc_w3 = DashboardWidget(
-            dashboard_id=sc_id,
-            widget_id="react-incident-matrix",
-            title="Live SRE Incident Severity & On-Call Matrix",
-            widget_type="react_app",
-            grid_json=json.dumps({"x": 0, "y": 5, "w": 6, "h": 5}),
-            spec_json=json.dumps({
-                "type": "incident_matrix",
-                "app_name": "Incident Matrix",
-                "component_path": "src/widgets/IncidentMatrix.tsx",
-                "description": "Real-time P1/P2 alert triage with on-call shift countdown and automated page dispatch."
-            }),
-            datasource_json=json.dumps({"type": "mcp_github", "label": "PagerDuty / SRE MCP"})
-        )
-
-        # Widget 4: Superset Headless BI Revenue vs Latency (ECharts)
-        w3_spec_data = {
-            "title": {"text": "Superset Headless BI: Revenue vs Latency", "left": "center", "textStyle": {"fontSize": 14, "color": "#1C1B1F"}},
-            "tooltip": {"trigger": "axis"},
-            "grid": {"left": "3%", "right": "4%", "bottom": "10%", "top": "18%", "containLabel": True},
-            "xAxis": {"type": "category", "boundaryGap": False, "data": ["Week 1", "Week 2", "Week 3", "Week 4", "Week 5", "Week 6"]},
-            "yAxis": [
-                {"type": "value", "name": "Query Execs (k)", "position": "left"},
-                {"type": "value", "name": "p95 Latency (ms)", "position": "right"}
-            ],
-            "series": [
-                {"name": "Queries Executed", "type": "line", "smooth": True, "areaStyle": {"opacity": 0.2, "color": "#21005D"}, "itemStyle": {"color": "#6750A4"}, "data": [120, 142, 180, 210, 245, 290]},
-                {"name": "p95 Latency", "type": "line", "yAxisIndex": 1, "itemStyle": {"color": "#006A6A"}, "data": [320, 310, 280, 290, 260, 240]}
-            ]
-        }
-        sc_w4 = DashboardWidget(
-            dashboard_id=sc_id,
-            widget_id="sc-superset-revenue",
-            title="Superset Headless BI: Revenue vs Latency",
-            widget_type="echarts",
-            grid_json=json.dumps({"x": 6, "y": 5, "w": 6, "h": 5}),
-            spec_json=json.dumps(w3_spec_data),
-            datasource_json=json.dumps({"type": "mcp_superset", "label": "Superset 7.0 MCP: query_performance"})
-        )
-
-        # Widget 5: In-Process DuckDB Query Telemetry Table (Table)
-        sc_w5 = DashboardWidget(
-            dashboard_id=sc_id,
-            widget_id="sc-duckdb-table",
-            title="Engine Query Performance & Latency Matrix",
-            widget_type="table",
-            grid_json=json.dumps({"x": 0, "y": 10, "w": 6, "h": 5}),
-            spec_json=json.dumps({
-                "type": "table",
-                "columns": ["Engine", "Type", "Latency (ms)", "Cache Hit"],
-                "rows": [
-                    {"Engine": "DuckDB In-Memory", "Type": "In-Process", "Latency (ms)": 18.4, "Cache Hit": "99.8%"},
-                    {"Engine": "ClickHouse Live", "Type": "Columnar", "Latency (ms)": 64.1, "Cache Hit": "97.4%"},
-                    {"Engine": "Postgres Primary", "Type": "OLTP", "Latency (ms)": 142.5, "Cache Hit": "98.2%"},
-                    {"Engine": "Snowflake DW", "Type": "OLAP", "Latency (ms)": 480.2, "Cache Hit": "89.5%"}
-                ]
-            }),
-            datasource_json=json.dumps({"type": "duckdb", "label": "DuckDB In-Process Engine"})
-        )
-
-        # Widget 6: Weekly PR Turnaround & Merge Velocity (ECharts)
-        w1_spec_data = {
-            "title": {"text": "Weekly PR Turnaround & Merge Velocity", "left": "center", "textStyle": {"fontSize": 14, "color": "#1C1B1F"}},
-            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-            "grid": {"left": "3%", "right": "4%", "bottom": "10%", "top": "18%", "containLabel": True},
-            "xAxis": {"type": "category", "data": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]},
-            "yAxis": {"type": "value", "name": "Hours to Merge"},
-            "series": [
-                {"name": "Avg Review Time", "type": "bar", "data": [14.2, 8.5, 22.1, 6.4, 12.0, 3.2, 2.1], "itemStyle": {"color": "#6750A4", "borderRadius": [8, 8, 0, 0]}},
-                {"name": "Target SLA", "type": "line", "data": [10, 10, 10, 10, 10, 10, 10], "itemStyle": {"color": "#B3261E"}, "lineStyle": {"type": "dashed"}}
-            ]
-        }
-        sc_w6 = DashboardWidget(
-            dashboard_id=sc_id,
-            widget_id="sc-pr-velocity",
-            title="Weekly PR Turnaround & Merge Velocity",
-            widget_type="echarts",
-            grid_json=json.dumps({"x": 6, "y": 10, "w": 6, "h": 5}),
-            spec_json=json.dumps(w1_spec_data),
-            datasource_json=json.dumps({"type": "mcp_github", "label": "GitHub MCP: /repos/main/pulls"})
-        )
-
-        # Widget 7: Architecture Brief (Markdown)
-        sc_w7 = DashboardWidget(
-            dashboard_id=sc_id,
-            widget_id="sc-architecture-brief",
-            title="Architecture Brief: Hybrid Canvas & React Micro-Frontends",
-            widget_type="text_audit",
-            grid_json=json.dumps({"x": 0, "y": 15, "w": 12, "h": 4}),
-            spec_json=json.dumps({
-                "type": "text_audit",
-                "status": "⚛️ React App Architecture",
-                "sla_status": "Preset Agora Extensible Standard",
-                "findings": [
-                    {
-                        "severity": "info",
-                        "title": "Stateful React Micro-Frontends",
-                        "detail": "Widgets are not limited to static SVG/Canvas charts. They host full React components with local hooks, sliders, buttons, and API calls."
-                    },
-                    {
-                        "severity": "info",
-                        "title": "Custom Visualizations & D3",
-                        "detail": "Developers can implement custom SVGs, force-directed graphs, or Sankey flows tailored to internal business domain models."
-                    },
-                    {
-                        "severity": "info",
-                        "title": "Unified Data Substrate",
-                        "detail": "Both ECharts and React App widgets connect to the same DuckDB in-memory cache and Superset Headless BI engine."
-                    }
-                ]
-            }),
-            datasource_json=json.dumps({"type": "local_repo", "label": "Antigravity Studio Spec"})
-        )
-
-        db.add_all([sc_w1, sc_w2, sc_w3, sc_w4, sc_w5, sc_w6, sc_w7])
-        db.commit()
-
-    # 4. Agent Personas
-    personas = db.query(AgentPersona).all()
-    if not personas:
-        github_agent = AgentPersona(
-            id="github-agent",
-            name="GitHub Intelligence Agent",
-            role_description="Specialist in PR code reviews, developer velocity, commit churn heatmaps, and repository audits.",
-            icon="git-pull-request",
-            is_default=True,
-            system_instructions=(
-                "You are the GitHub Engineering & Code Review Specialist.\n\n"
-                "Key Responsibilities:\n"
-                "1. Audit GitHub pull requests, review turnaround times, and enforce the 10-hour SLA target.\n"
-                "2. Conduct deep code reviews on repositories (`main-service`, `data-pipeline`). Verify that database operations use parameterized queries.\n"
-                "3. Analyze commit churn and peak developer velocity using local git logs and GitHub MCP.\n"
-                "4. When a critical bug or vulnerability is identified, ONLY create or update a Jira ticket if the user explicitly asks for it AND Jira MCP is connected.\n"
-                "5. Emit high-contrast, informative ECharts visualization widgets onto the dashboard canvas."
-            )
-        )
-        superset_agent = AgentPersona(
-            id="superset-agent",
-            name="Superset Headless BI Agent",
-            role_description="Specialist in headless business intelligence, data catalog exploration, and dynamic analytical chart generation.",
-            icon="bar-chart-3",
-            is_default=False,
-            system_instructions=(
-                "You are the Superset Headless BI & Data Analytics Specialist.\n\n"
-                "Key Responsibilities:\n"
-                "1. Connect directly to Superset backend endpoints (`/api/v1/chart/data` and `/api/v1/sqllab/execute/`) via Superset MCP, completely skipping the Superset frontend.\n"
-                "2. Use the Data Catalog MCP to discover semantic tables, column schemas, and metrics glossary (`analytics.customer_transactions_daily`).\n"
-                "3. Formulate SQL slice queries to aggregate revenue, transaction volumes, user metrics, and query performance.\n"
-                "4. Project dynamic, interactive ECharts widgets directly onto the canvas with clear legends, axes, and responsive tooltips."
-            )
-        )
-        db.add_all([github_agent, superset_agent])
-        db.commit()
-
-    # 5. Local Repositories Registry
+    # 4. Local Repositories Registry
     repos = db.query(LocalRepository).all()
     if not repos:
         r1 = LocalRepository(
             name="main-service",
             remote_url="https://github.com/company/main-service.git",
-            local_path="/local_data/repos/main-service",
+            local_path=str(REPOS_DIR / "main-service"),
             clone_type="full",
             default_branch="main"
         )
         r2 = LocalRepository(
             name="data-pipeline",
             remote_url="https://github.com/company/data-pipeline.git",
-            local_path="/local_data/repos/data-pipeline",
+            local_path=str(REPOS_DIR / "data-pipeline"),
             clone_type="full",
             default_branch="main"
         )

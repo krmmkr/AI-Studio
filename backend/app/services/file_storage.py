@@ -63,3 +63,35 @@ def read_user_file(user_id: int, relative_path: str) -> bytes:
         raise FileNotFoundError("Requested file does not exist.")
     with open(target_path, "rb") as f:
         return f.read()
+
+from typing import Protocol
+
+class StorageProvider(Protocol):
+    """Abstract interface for bulk dataset, report, and artifact storage backends."""
+    def save(self, user_id: int, original_filename: str, content: bytes | str) -> tuple[str, str, int]: ...
+    def read(self, user_id: int, relative_path: str) -> bytes: ...
+    def delete(self, user_id: int, relative_path: str) -> bool: ...
+
+class LocalStorageProvider:
+    """POSIX filesystem storage implementation with path traversal isolation."""
+    def save(self, user_id: int, original_filename: str, content: bytes | str) -> tuple[str, str, int]:
+        return save_user_file(user_id, original_filename, content)
+
+    def read(self, user_id: int, relative_path: str) -> bytes:
+        return read_user_file(user_id, relative_path)
+
+    def delete(self, user_id: int, relative_path: str) -> bool:
+        try:
+            target = safe_resolve_path(user_id, relative_path)
+            if target.exists() and target.is_file():
+                target.unlink()
+                return True
+            return False
+        except Exception:
+            return False
+
+_current_storage_provider: StorageProvider = LocalStorageProvider()
+
+def get_storage_provider() -> StorageProvider:
+    """Returns the configured bulk storage provider (LocalStorageProvider or S3/Blob in cloud)."""
+    return _current_storage_provider

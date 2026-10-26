@@ -1,53 +1,33 @@
-# Agent Context & Persistent Knowledge Base
+# Agent Context & Dynamic Engineering Intelligence Guidelines
 
-This file serves as the **reusable domain memory** for the Antigravity Agent. It is automatically loaded into the agent's system instructions, ensuring the agent never has to re-learn organizational conventions, schema structures, or code review rules.
+This file provides domain context for the Antigravity Studio agents (Google Antigravity SDK and OpenCode SDK).
 
----
+## 1. Dynamic, Requirement-Driven Repository & Codebase Analysis
 
-## 1. GitHub Engineering Context
+Antigravity Studio does **not** restrict analysis to fixed committer/contributor tables. There are **no** pre-baked `github_commits` or `github_contributors` tables unless explicitly created. Instead, you dynamically inspect the repository and propose custom datasets tailored to the exact question asked by the user.
 
-### Primary Repositories
-- **`main-service`**: Core business backend (FastAPI / Python 3.12).
-  - Code review SLA: **10 hours max**.
-  - Strict rule: All DB operations must use parameterized queries; no raw string formatting.
-- **`data-pipeline`**: ETL / streaming analytics pipelines.
-- **`auth-proxy`**: Security gateway, handles OIDC / JWT validation.
+### Dynamic Extraction Modes (`extract_repository_dataset_records`)
+When the user asks to analyze a repository or create datasets/charts:
+1. **Features, Routes, Components & Authorship (`extraction_mode="features_and_modules"`)**:
+   - Extracts real features, API endpoints/routes, UI components, classes, and functions from the codebase along with **who authored them** (`primary_author`, `last_author`, `contributor_count`, `commits_on_file`, `file_loc`, `module`, `last_modified`).
+2. **Codebase Issues, Tech Debt (TODO/FIXME/BUG) & Bugfix History (`extraction_mode="issues_todos_and_fixes"`)**:
+   - Extracts in-code issue markers (`TODO`, `FIXME`, `BUG`, `HACK`, `DEPRECATED`) and issue/bugfix commits along with their author, date, module, file/line reference, and churn.
+3. **File & Module Ownership / Hotspots (`extraction_mode="file_ownership_and_churn"`)**:
+   - Extracts per-file and per-module ownership, primary author, contributor count, commit count, lines added/deleted, and total churn.
+4. **Custom Git History & Diff Search (`extraction_mode="git_search"`)**:
+   - Searches commit messages (`--grep`) or code diffs (`-S`) and path filters to build custom tables for specific features, keywords, or subsystems.
 
-### Code Review Standards & Triage
-- PR diff size thresholds:
-  - Small: `< 150 lines` (1 approval required).
-  - Medium: `150 - 500 lines` (2 approvals required).
-  - High risk: `> 500 lines` (Architectural review + automated security scan required).
-- When a critical vulnerability or functional defect is identified during review:
-  - If **Jira MCP** is connected, suggest creating a defect ticket with label `security-bug` or `code-quality`.
+### Creating Custom Datasets (`propose_duckdb_dataset`)
+- Always propose custom datasets that match the user's specific requirement:
+  - Pass `propose_table_name` directly to `extract_repository_dataset_records`, **OR**
+  - Call `propose_duckdb_dataset(table_name="...", description="...", records=[...])` with any custom list of dictionary records synthesized from your codebase/git tools (`read_repository_file`, `search_repository_code`, `analyze_code_complexity`, `extract_repository_dataset_records`).
+- Once proposed, you can immediately reference `table_name` in `upsert_chart_widget(sql_query="SELECT ... FROM <table_name>")` OR pass `data_records=[...]` directly to `upsert_chart_widget`.
 
----
+## 2. Canvas Visualizations & Cross-Filtering
 
-## 2. Superset Headless BI & Data Catalog Context
-
-### Direct Headless BI Flow
-- **Superset Backend Endpoint**: Direct execution via Superset MCP (`/api/v1/chart/data` and `/api/v1/sqllab/execute/`).
-- **No Superset UI**: The Antigravity Canvas is the official presentation and interactive dashboard surface.
-
-### Semantic Data Catalog Mappings
-- **Customer Transactions**:
-  - Catalog Table: `analytics.customer_transactions_daily`
-  - Key Metrics: `revenue_usd`, `seats`, `deal_count`
-  - Dimensions: `region` (`North America`, `Europe`, `Asia-Pacific`, `Latin America`), `customer_tier` (`Enterprise`, `Growth`, `Starter`)
-- **Developer Metrics**:
-  - Catalog Table: `eng_metrics.pr_turnaround_daily`
-  - Key Metrics: `hours_to_merge`, `unreviewed_count`, `sla_breaches`
-
----
-
-## 3. Visualization Guidelines for the Canvas
-
-- Charts must be emitted in declarative **Apache ECharts** format.
-- Palette: Google Material 3 Expressive colors:
-  - Primary metric: `#6750A4` (M3 Purple)
-  - Secondary comparison: `#4A6572` / `#006A6A` (Teal/Indigo)
-  - SLA breach / Error: `#B3261E`
-- Every chart emitted onto the canvas should have:
-  - A clean title centered at the top.
-  - Interactive tooltips enabled (`trigger: "axis"` or `"item"`).
-  - A datasource tag indicating whether it was derived from **GitHub MCP**, **Superset 7.0 MCP**, or **Local Git Clone**.
+- Use `upsert_chart_widget` to mount interactive Apache ECharts (`bar`, `horizontal_bar`, `stacked_bar`, `line`, `area`, `pie`, `donut`, `scatter`, `radar`, `heatmap`, `calendar`, `treemap`, `kpi`, `table`) on the active dashboard canvas.
+- Use `create_single_filter_widget` to mount interactive cross-filters for any dimension present in your datasets or canvas charts (e.g., `primary_author`, `category`, `module`, `tag`, `issue_kind`).
+- Palette:
+  - Primary series: `#6750A4` (Indigo/Purple)
+  - Secondary series: `#0D9488` (Teal), `#2563EB` (Blue), `#10B981` (Emerald)
+  - Alert / Warning series: `#E11D48` (Rose), `#F59E0B` (Amber)

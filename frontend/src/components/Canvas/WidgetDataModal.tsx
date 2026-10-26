@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { DashboardWidget, LocalRepository, WidgetSource } from '../../types';
+import { DashboardWidget, LocalRepository, WidgetSource, MCPConfig } from '../../types';
 import { duckdbWasm, DuckDBQueryResult } from '../../services/duckdbWasm';
+import { duckdbApi, mcpApi } from '../../api/client';
 import {
   X,
   Copy,
@@ -17,6 +18,8 @@ import {
   Play,
   Loader2,
   Terminal,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 
 interface WidgetDataModalProps {
@@ -44,11 +47,26 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
   onUpdateWidgetSources,
 }) => {
   const [currentTab, setCurrentTab] = useState<'data' | 'sql' | 'sources'>(initialTab);
+  const [isMaximized, setIsMaximized] = useState(false);
   const [copiedSQL, setCopiedSQL] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [selectedSourceToAdd, setSelectedSourceToAdd] = useState('');
+  const [liveDatasets, setLiveDatasets] = useState<Array<{
+    table_name: string;
+    row_count: number;
+    columns?: string[];
+    is_derived?: boolean;
+    lineage?: {
+      origin_type?: string;
+      source_name?: string;
+      derivation_summary?: string;
+      source_query?: string;
+    };
+  }>>([]);
+  const [liveMcpServers, setLiveMcpServers] = useState<MCPConfig[]>([]);
+  const [showLineageSQL, setShowLineageSQL] = useState(false);
 
   // DuckDB-WASM Client-Side Execution State
   const [wasmScratchpad, setWasmScratchpad] = useState(false);
@@ -57,12 +75,15 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
   const [wasmResult, setWasmResult] = useState<DuckDBQueryResult | null>(null);
   const [wasmError, setWasmError] = useState<string | null>(null);
 
-  // Update tab if prop changes when opening
+  // Update tab and load live datasets/MCP servers when opening
   React.useEffect(() => {
     if (isOpen) {
       setCurrentTab(initialTab);
       setSearchQuery('');
       setCopiedSQL(false);
+      setShowLineageSQL(false);
+      duckdbApi.getDatasets().then((res) => setLiveDatasets(res || [])).catch(() => {});
+      mcpApi.list().then((servers) => setLiveMcpServers(servers || [])).catch(() => {});
     }
   }, [isOpen, initialTab]);
 
@@ -90,15 +111,17 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
     if (widget.spec?.local_dataset?.name) {
       return widget.spec.local_dataset.name;
     }
-    const str = JSON.stringify(currentSources).toLowerCase();
-    if (str.includes('commit') || str.includes('pr') || str.includes('github') || widget.title.toLowerCase().includes('commit')) {
-      return 'duckdb.github_commits';
+    const dsSource = currentSources.find((s) => s.type === 'duckdb' && s.ref);
+    if (dsSource?.ref) {
+      return dsSource.ref.replace(/^duckdb:\/\//, '');
     }
-    if (str.includes('superset') || str.includes('revenue') || str.includes('transaction') || widget.title.toLowerCase().includes('superset')) {
-      return 'duckdb.superset_bi_transactions';
-    }
-    return 'duckdb.engine_benchmarks';
+    return liveDatasets[0]?.table_name || '';
   };
+
+  const matchedDataset = useMemo(() => {
+    const rawName = getLocalDatasetInfo().replace(/^duckdb\./, '');
+    return liveDatasets.find((d) => d.table_name === rawName) || null;
+  }, [liveDatasets, widget, currentSources]);
 
   // Helper to detect engine type
   const getEngineInfo = () => {
@@ -115,10 +138,28 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
     if (!widget) return { columns: [], rows: [], extractedSQL: '' };
     let cols: string[] = [];
     let dataRows: Record<string, any>[] = [];
-    let sql = widget.spec?.sql || widget.spec?.query || '';
+    let sql = widget.datasource?.query || widget.datasource?.sql || widget.spec?.sql || widget.spec?.query || widget.spec?.query_spec?.sql || '';
 
+    // 0. Canonical raw_table lineage embedded by compiler
+    if (widget.spec?.raw_table && Array.isArray(widget.spec.raw_table.columns) && Array.isArray(widget.spec.raw_table.rows)) {
+      cols = widget.spec.raw_table.columns;
+      const rawMatrix = widget.spec.raw_table.rows;
+      dataRows = rawMatrix.map((r: any) => {
+        if (Array.isArray(r)) {
+          const rowObj: Record<string, any> = {};
+          cols.forEach((col, idx) => {
+            rowObj[col] = r[idx];
+          });
+          return rowObj;
+        }
+        return r;
+      });
+      if (!sql) {
+        sql = `SELECT ${cols.join(', ')} FROM ${getLocalDatasetInfo()} LIMIT 1000;`;
+      }
+    }
     // 1. Table widget
-    if (widget.spec?.columns && Array.isArray(widget.spec.columns)) {
+    else if (widget.spec?.columns && Array.isArray(widget.spec.columns)) {
       cols = widget.spec.columns;
       dataRows = widget.spec.rows || [];
       if (!sql) {
@@ -156,7 +197,7 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
         'Share (%)': `${Math.round(((item.value || 0) / total) * 1000) / 10}%`,
       }));
       if (!sql) {
-        sql = `-- Code Review Diff Size Distribution\nSELECT\n  CASE\n    WHEN diff_lines < 100 THEN 'Small (< 100 lines)'\n    WHEN diff_lines <= 400 THEN 'Medium (100 - 400 lines)'\n    WHEN diff_lines <= 1000 THEN 'Large (400 - 1000 lines)'\n    ELSE 'Massive (> 1000 lines)'\n  END AS diff_size_category,\n  COUNT(*) AS pr_count,\n  ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS share_pct\nFROM github_pull_requests\nWHERE repository = '${effectiveRepo}'\n  AND created_at >= CURRENT_DATE - INTERVAL '${effectiveDate}'\nGROUP BY 1\nORDER BY pr_count DESC;`;
+        sql = `-- Code Review Diff Size Distribution\nSELECT\n  CASE\n    WHEN (lines_added + lines_deleted) < 100 THEN 'Small (< 100 lines)'\n    WHEN (lines_added + lines_deleted) <= 400 THEN 'Medium (100 - 400 lines)'\n    WHEN (lines_added + lines_deleted) <= 1000 THEN 'Large (400 - 1000 lines)'\n    ELSE 'Massive (> 1000 lines)'\n  END AS diff_size_category,\n  COUNT(*) AS pr_count,\n  ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS share_pct\nFROM github_commits\nGROUP BY 1\nORDER BY pr_count DESC;`;
       }
     }
     // 4. Bar / Line chart with xAxis.data
@@ -178,9 +219,9 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
       if (!sql) {
         const isPRVelocity = widget.title.toLowerCase().includes('velocity') || widget.title.toLowerCase().includes('pr');
         if (isPRVelocity) {
-          sql = `-- Weekly Pull Request Turnaround & Target SLA\nSELECT\n  strftime('%a', pr.created_at) AS day_of_week,\n  ROUND(AVG(pr.review_time_hours), 1) AS avg_review_time,\n  10.0 AS target_sla\nFROM github_pull_requests pr\nWHERE pr.repository = '${effectiveRepo}'\n  AND pr.created_at >= CURRENT_DATE - INTERVAL '${effectiveDate}'\nGROUP BY 1\nORDER BY MIN(pr.created_at);`;
+          sql = `-- Weekly Pull Request Turnaround & Target SLA\nSELECT\n  repo,\n  COUNT(*) AS commit_count,\n  ROUND(AVG(lines_added), 1) AS avg_lines_added,\n  10.0 AS target_sla\nFROM github_commits\nGROUP BY 1\nORDER BY 1;`;
         } else {
-          sql = `-- Superset Headless BI Telemetry Query\nSELECT\n  date_trunc('week', execution_time) AS week_period,\n  ROUND(COUNT(query_id) / 1000.0, 1) AS queries_executed_k,\n  approx_percentile(latency_ms, 0.95) AS p95_latency_ms\nFROM superset_query_performance\nWHERE status = 'SUCCESS'\n  AND execution_time >= CURRENT_DATE - INTERVAL '${effectiveDate}'\nGROUP BY 1\nORDER BY 1 ASC;`;
+          sql = `-- Superset Headless BI Telemetry Query\nSELECT\n  database_name,\n  latency_ms,\n  cache_hit_pct\nFROM superset_query_performance\nORDER BY latency_ms DESC;`;
         }
       }
     }
@@ -193,7 +234,7 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
         Details: f.detail || '',
       }));
       if (!sql) {
-        sql = `-- Code Review SLA & Risk Audit Log\nSELECT\n  severity,\n  title,\n  detail\nFROM github_audit_events\nWHERE repository = '${effectiveRepo}'\nORDER BY CASE severity WHEN 'high' THEN 1 WHEN 'warn' THEN 2 ELSE 3 END\nLIMIT 50;`;
+        sql = `-- Code Review SLA & Risk Audit Log\nSELECT\n  author,\n  message,\n  lines_added,\n  lines_deleted,\n  committed_at\nFROM github_commits\nORDER BY (lines_added + lines_deleted) DESC\nLIMIT 50;`;
       }
     }
     // 6. React Micro-App
@@ -324,18 +365,25 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
         label: `${repoName} (Local Repo)`,
         ref: `/local_data/repos/${repoName}`,
       };
-    } else if (sourceKey === 'mcp_github') {
+    } else if (sourceKey.startsWith('dataset:')) {
+      const dsName = sourceKey.replace('dataset:', '');
+      const dsObj = liveDatasets.find((d) => d.table_name === dsName);
+      const srcTag = dsObj?.lineage?.source_name ? ` ↳ ${dsObj.lineage.source_name}` : '';
       newSource = {
-        type: 'mcp_github',
-        label: 'GitHub MCP (Live PRs & Issues)',
-        ref: 'mcp://github/pulls',
+        type: 'duckdb',
+        label: `${dsName}${srcTag}`,
+        ref: `duckdb://${dsName}`,
       };
-    } else if (sourceKey === 'mcp_superset') {
-      newSource = {
-        type: 'mcp_superset',
-        label: 'Superset Headless BI (Query Engine)',
-        ref: '/api/v1/chart/data',
-      };
+    } else if (sourceKey.startsWith('mcp:')) {
+      const mcpId = Number(sourceKey.replace('mcp:', ''));
+      const srv = liveMcpServers.find((s) => s.id === mcpId);
+      if (srv) {
+        newSource = {
+          type: `mcp_${srv.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+          label: `${srv.name} (MCP)`,
+          ref: srv.url,
+        };
+      }
     } else if (sourceKey === 'duckdb') {
       newSource = {
         type: 'duckdb',
@@ -359,8 +407,12 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
   if (!isOpen || !widget) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fadeIn">
-      <div className="bg-m3-surface rounded-4xl max-w-4xl w-full max-h-[88vh] p-6 shadow-2xl border border-m3-outline-variant/30 flex flex-col">
+    <div className={`fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-xs animate-fadeIn ${isMaximized ? 'p-0' : 'p-4'}`}>
+      <div className={`bg-m3-surface shadow-2xl border border-m3-outline-variant/30 flex flex-col transition-all duration-200 ${
+        isMaximized
+          ? 'w-screen h-screen max-w-none max-h-none rounded-none m-0 p-6'
+          : 'rounded-4xl w-[94vw] max-w-6xl h-[86vh] min-h-[640px] p-6'
+      }`}>
         {/* Modal Header */}
         <div className="flex items-center justify-between pb-4 border-b border-m3-outline-variant/20">
           <div className="flex items-center gap-3">
@@ -383,13 +435,20 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-m3-on-surface-variant flex items-center gap-1.5 mt-0.5">
-                <span>Provenance:</span>
+                <span>Engine:</span>
                 <span className="font-medium text-m3-on-surface">{getEngineInfo()}</span>
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setIsMaximized(!isMaximized)}
+              title={isMaximized ? "Exit Fullscreen" : "Maximize Fullscreen"}
+              className="p-2 rounded-full hover:bg-m3-surface-container-high transition-colors text-m3-on-surface-variant hover:text-m3-on-surface"
+            >
+              {isMaximized ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+            </button>
             <button
               onClick={onClose}
               className="p-2 rounded-full hover:bg-m3-surface-container-high transition-colors text-m3-on-surface-variant hover:text-m3-on-surface"
@@ -399,42 +458,21 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
           </div>
         </div>
 
-        {/* Tab Switcher (Superset-style [ View as Table ] [ View Query / SQL ] [ Datasource & Lineage ]) */}
+        {/* View Selector Dropdown */}
         <div className="flex items-center justify-between my-3.5 flex-wrap gap-2">
-          <div className="flex gap-1.5 bg-m3-surface-container-low p-1 rounded-full border border-m3-outline-variant/20">
-            <button
-              onClick={() => setCurrentTab('data')}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                currentTab === 'data'
-                  ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                  : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-              }`}
+          <div className="flex items-center gap-2.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-m3-on-surface-variant">
+              Inspector View:
+            </label>
+            <select
+              value={currentTab}
+              onChange={(e) => setCurrentTab(e.target.value as 'data' | 'sql' | 'sources')}
+              className="px-3.5 py-2 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs font-bold text-m3-on-surface focus:outline-none focus:border-m3-primary cursor-pointer"
             >
-              <TableIcon className="w-3.5 h-3.5" />
-              <span>View Data ({rows.length})</span>
-            </button>
-            <button
-              onClick={() => setCurrentTab('sql')}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                currentTab === 'sql'
-                  ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                  : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-              }`}
-            >
-              <Code2 className="w-3.5 h-3.5" />
-              <span>View SQL Query</span>
-            </button>
-            <button
-              onClick={() => setCurrentTab('sources')}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                currentTab === 'sources'
-                  ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                  : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-              }`}
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>Lineage & Sources</span>
-            </button>
+              <option value="data">View Data ({rows.length} rows)</option>
+              <option value="sql">View SQL Query & Scratchpad</option>
+              <option value="sources">Lineage & Attached Sources ({currentSources.length})</option>
+            </select>
           </div>
 
           {/* Action buttons depending on active tab */}
@@ -563,32 +601,22 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden space-y-3">
             {/* Mode Switcher: Generated Query vs Live DuckDB-WASM */}
             <div className="flex items-center justify-between pb-1 flex-wrap gap-2">
-              <div className="flex items-center gap-1.5 bg-m3-surface-container-low p-1 rounded-full border border-m3-outline-variant/20 text-xs">
-                <button
-                  onClick={() => setWasmScratchpad(false)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-all ${
-                    !wasmScratchpad
-                      ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                      : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-                  }`}
-                >
-                  <Code2 className="w-3.5 h-3.5" />
-                  <span>Generated SQL Spec</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setWasmScratchpad(true);
-                    if (!wasmResult) handleRunWasm();
+              <div className="flex items-center gap-2 text-xs">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-m3-on-surface-variant">
+                  SQL Mode:
+                </label>
+                <select
+                  value={wasmScratchpad ? 'wasm' : 'spec'}
+                  onChange={(e) => {
+                    const useWasm = e.target.value === 'wasm';
+                    setWasmScratchpad(useWasm);
+                    if (useWasm && !wasmResult) handleRunWasm();
                   }}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-all ${
-                    wasmScratchpad
-                      ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-xs'
-                      : 'text-amber-400 hover:text-amber-300'
-                  }`}
+                  className="px-3 py-1.5 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs font-bold text-m3-on-surface focus:outline-none focus:border-m3-primary cursor-pointer"
                 >
-                  <Zap className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Live DuckDB-WASM</span>
-                </button>
+                  <option value="spec">Generated SQL Spec</option>
+                  <option value="wasm">Live DuckDB-WASM Scratchpad</option>
+                </select>
               </div>
 
               {wasmScratchpad && (
@@ -650,7 +678,7 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
                   <div className="flex items-center gap-2">
                     <Info className="w-3.5 h-3.5 text-m3-primary shrink-0" />
                     <span>
-                      This SQL statement is executed against DuckDB in-process virtual tables or forwarded via Superset MCP.
+                      Executed against DuckDB or connected datasources.
                     </span>
                   </div>
                 </div>
@@ -760,31 +788,66 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
         {/* Tab 3: Lineage & Sources */}
         {currentTab === 'sources' && (
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto space-y-4 pr-1">
-            {/* Local Stored Dataset Indicator Card */}
-            <div className="p-3.5 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/20 flex flex-col gap-1.5">
+            {/* Local Stored Dataset Indicator Card with Lineage */}
+            <div className="p-3.5 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/20 flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold text-m3-on-surface-variant uppercase tracking-wider flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  Local Stored In-Memory Dataset
+                  Primary Local Dataset
                 </span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-semibold">
-                  DuckDB Virtual Table
-                </span>
+                <div className="flex items-center gap-1.5">
+                  {matchedDataset?.is_derived && (
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-semibold">
+                      Derived View
+                    </span>
+                  )}
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-semibold">
+                    DuckDB Table
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center justify-between text-xs mt-1">
-                <span className="font-semibold text-m3-on-surface text-sm">
-                  {getLocalDatasetInfo()}
-                </span>
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono font-bold text-m3-on-surface text-sm">
+                    {getLocalDatasetInfo()}
+                  </span>
+                  {matchedDataset?.lineage?.source_name && (
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-m3-surface-container-high text-m3-primary">
+                      Source: {matchedDataset.lineage.source_name}
+                    </span>
+                  )}
+                </div>
                 <span className="text-xs text-m3-on-surface-variant font-mono">
-                  In-Process Zero Latency
+                  {matchedDataset ? `${matchedDataset.row_count} rows` : 'Local Cache'}
                 </span>
               </div>
+              {matchedDataset?.lineage?.derivation_summary && (
+                <div className="pt-1.5 border-t border-m3-outline-variant/15 flex items-center justify-between gap-2 text-[11px] text-m3-on-surface-variant">
+                  <span className="truncate" title={matchedDataset.lineage.derivation_summary}>
+                    Lineage: {matchedDataset.lineage.derivation_summary}
+                  </span>
+                  {matchedDataset.lineage.source_query && (
+                    <button
+                      type="button"
+                      onClick={() => setShowLineageSQL(!showLineageSQL)}
+                      className="text-[10px] font-semibold text-m3-primary hover:underline shrink-0 cursor-pointer"
+                    >
+                      {showLineageSQL ? 'Hide Derivation SQL' : 'View Derivation SQL'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {showLineageSQL && matchedDataset?.lineage?.source_query && (
+                <pre className="p-2.5 rounded-xl bg-[#181824] border border-white/10 font-mono text-[11px] text-indigo-200 overflow-x-auto whitespace-pre-wrap">
+                  {matchedDataset.lineage.source_query}
+                </pre>
+              )}
             </div>
 
             {/* Attached Sources List */}
             <div className="space-y-2">
               <div className="text-[11px] font-bold text-m3-on-surface-variant uppercase tracking-wider">
-                Attached External MCPs & Repositories ({currentSources.length})
+                Attached Sources ({currentSources.length})
               </div>
               {currentSources.length === 0 ? (
                 <p className="text-xs text-m3-on-surface-variant italic py-2">
@@ -798,9 +861,9 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
                   >
                     <div className="flex items-center gap-2.5 truncate">
                       <div className="w-7 h-7 rounded-xl bg-m3-surface-container-high flex items-center justify-center shrink-0">
-                        {src.type.includes('github') ? (
+                        {src.type.includes('github') || src.type.includes('repo') ? (
                           <GitPullRequest className="w-3.5 h-3.5 text-purple-400" />
-                        ) : src.type.includes('superset') ? (
+                        ) : src.type.includes('superset') || src.type.includes('mcp') ? (
                           <Zap className="w-3.5 h-3.5 text-amber-400" />
                         ) : (
                           <Database className="w-3.5 h-3.5 text-emerald-400" />
@@ -842,19 +905,37 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
                     setSelectedSourceToAdd(e.target.value);
                     handleAddSource(e.target.value);
                   }}
-                  className="w-full text-xs p-2.5 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/30 text-m3-on-surface focus:outline-none"
+                  className="w-full text-xs p-2.5 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/30 text-m3-on-surface focus:outline-none cursor-pointer"
                 >
                   <option value="">Select source to attach...</option>
-                  <optgroup label="Local Persistent Git Clones">
-                    {availableRepos.map((r) => (
-                      <option key={r.id} value={`repo:${r.name}`}>
-                        Local Repo: {r.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="Live MCP Tools & Engines">
-                    <option value="mcp_github">GitHub MCP (Live PRs & Issues)</option>
-                    <option value="mcp_superset">Superset Headless BI Engine</option>
+                  {liveDatasets.length > 0 && (
+                    <optgroup label="DuckDB Local & Derived Datasets">
+                      {liveDatasets.map((ds) => (
+                        <option key={ds.table_name} value={`dataset:${ds.table_name}`}>
+                          {ds.table_name} ({ds.row_count} rows{ds.lineage?.source_name ? ` • Source: ${ds.lineage.source_name}` : ''})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {availableRepos.length > 0 && (
+                    <optgroup label="Local Git Repositories">
+                      {availableRepos.map((r) => (
+                        <option key={r.id} value={`repo:${r.name}`}>
+                          {r.name} ({r.default_branch})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {liveMcpServers.length > 0 && (
+                    <optgroup label="Connected MCP Servers">
+                      {liveMcpServers.map((s) => (
+                        <option key={s.id} value={`mcp:${s.id}`}>
+                          {s.name} ({s.url})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="In-Process Engine">
                     <option value="duckdb">Embedded DuckDB In-Process Engine</option>
                   </optgroup>
                 </select>
@@ -865,8 +946,8 @@ export const WidgetDataModal: React.FC<WidgetDataModalProps> = ({
 
         {/* Footer */}
         <div className="flex items-center justify-between pt-4 mt-3 border-t border-m3-outline-variant/20 text-xs">
-          <span className="text-[11px] text-m3-on-surface-variant">
-            Antigravity Studio BI Auditability Engine
+          <span className="text-[11px] text-m3-on-surface-variant font-mono">
+            {rows.length} rows loaded
           </span>
           <button
             onClick={onClose}

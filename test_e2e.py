@@ -1,5 +1,18 @@
+import os
 import asyncio
 import httpx
+import subprocess
+import shutil
+from pathlib import Path
+
+# Use an isolated temporary test database to prevent polluting local_data/cockpit.db
+TEST_DB_PATH = Path("/tmp/test_cockpit_e2e.db")
+if TEST_DB_PATH.exists():
+    TEST_DB_PATH.unlink()
+
+os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH}"
+os.environ["SEED_MOCK_DATA"] = "true"
+
 from backend.app.main import app
 from backend.app.database import engine, Base, SessionLocal
 from backend.app.services.seed_data import seed_database
@@ -7,16 +20,22 @@ from backend.app.services.seed_data import seed_database
 async def test_all():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
-    seed_database(db)
+    seed_database(db, force_mock=True)
     db.close()
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # 1. Test Static files
+        # 1. Test Static files and Health / Readiness probes
         r_root = await client.get("/")
         assert r_root.status_code == 200, f"Expected 200 on /, got {r_root.status_code}"
         assert "<div id=\"root\"></div>" in r_root.text, "Index HTML missing root div"
         print("✓ Root index.html served correctly")
+
+        r_health = await client.get("/healthz")
+        assert r_health.status_code == 200 and r_health.json()["status"] == "ok"
+        r_ready = await client.get("/readyz")
+        assert r_ready.status_code == 200 and r_ready.json()["database"] == "connected"
+        print("✓ Health (/healthz) and Database Readiness (/readyz) probes operating")
 
         # 2. Test Login
         r_login = await client.post("/api/auth/login", json={
@@ -47,38 +66,68 @@ async def test_all():
         r_repos = await client.get("/api/agents/repositories", headers=headers)
         assert r_repos.status_code == 200
         repos = r_repos.json()
-        assert len(repos) >= 2
+        assert len(repos) >= 1
         print(f"✓ Local persistent repositories tracked: {[r['name'] for r in repos]}")
 
-        # Test Repo Management Lifecycle (Create & Delete)
+        # Prepare a local git repo to verify real git clone & delete lifecycle
+        test_source = Path("/tmp/e2e_source_repo")
+        if test_source.exists():
+            shutil.rmtree(test_source, ignore_errors=True)
+        test_source.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main", str(test_source)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(test_source), "config", "user.email", "e2e@antigravity.io"], check=True)
+        subprocess.run(["git", "-C", str(test_source), "config", "user.name", "E2E Tester"], check=True)
+        subprocess.run(["git", "-C", str(test_source), "commit", "--allow-empty", "-m", "initial test commit"], check=True, capture_output=True)
+
+        # Test Repo Management Lifecycle (Real Git Clone & Delete)
         r_create_repo = await client.post("/api/agents/repositories", json={
             "name": "temp-test-repo",
-            "remote_url": "https://github.com/organization/temp-test-repo.git",
+            "remote_url": str(test_source),
             "clone_type": "shallow",
             "default_branch": "main"
         }, headers=headers)
-        assert r_create_repo.status_code == 200
+        assert r_create_repo.status_code == 200, f"Repo clone failed: {r_create_repo.text}"
         temp_repo_id = r_create_repo.json()["id"]
 
         r_del_repo = await client.delete(f"/api/agents/repositories/{temp_repo_id}", headers=headers)
         assert r_del_repo.status_code == 200
-        print(f"✓ Central repository management: successfully registered and deleted repo ID {temp_repo_id}")
+        print(f"✓ Central repository management: successfully cloned and deleted repo ID {temp_repo_id}")
+        shutil.rmtree(test_source, ignore_errors=True)
 
-        # 6. Test DuckDB In-Process Engine & Available Datasets
+        # 6. Test DuckDB In-Process Engine & On-Demand Datasets
+        from backend.app.services.duckdb_service import duckdb_service
+        duckdb_service.materialize_dataset("analytics_sample", [
+            {"region": "North America", "revenue_usd": 45000.0},
+            {"region": "Europe", "revenue_usd": 32000.0},
+        ])
+
         r_datasets = await client.get("/api/duckdb/datasets", headers=headers)
         assert r_datasets.status_code == 200
         datasets = r_datasets.json()
-        assert len(datasets) >= 2
+        assert len(datasets) >= 1
         table_names = [d["table_name"] for d in datasets]
-        assert "github_commits" in table_names and "superset_bi_transactions" in table_names
-        print(f"✓ Active DuckDB virtual datasets listed: {table_names}")
+        assert "analytics_sample" in table_names
+        print(f"✓ Active DuckDB datasets listed: {table_names}")
 
-        duck_sql = "SELECT region, SUM(revenue_usd) as total_rev FROM superset_bi_transactions GROUP BY region ORDER BY total_rev DESC;"
+        duck_sql = "SELECT region, SUM(revenue_usd) as total_rev FROM analytics_sample GROUP BY region ORDER BY total_rev DESC;"
         r_duck = await client.post("/api/duckdb/query", json={"sql": duck_sql}, headers=headers)
         assert r_duck.status_code == 200, f"DuckDB query failed: {r_duck.text}"
         duck_res = r_duck.json()
         assert duck_res["row_count"] > 0, "DuckDB returned 0 rows"
         print(f"✓ Embedded DuckDB executed analytics query successfully ({duck_res['row_count']} rows computed)")
+
+        # Test DuckDB Security Hardening: Block dangerous / multi-statement / DDL queries
+        r_bad1 = await client.post("/api/duckdb/query", json={"sql": "DROP TABLE analytics_sample;"}, headers=headers)
+        assert r_bad1.status_code == 400, "Failed to block DROP TABLE"
+        r_bad2 = await client.post("/api/duckdb/query", json={"sql": "SELECT 1; DROP TABLE analytics_sample;"}, headers=headers)
+        assert r_bad2.status_code == 400, "Failed to block multi-statement SQL"
+        r_bad3 = await client.post("/api/duckdb/query", json={"sql": "/* comment */ COPY analytics_sample TO '/tmp/leak.csv'"}, headers=headers)
+        assert r_bad3.status_code == 400, "Failed to block COPY / comment evasion"
+        print("✓ DuckDB query engine security validation: successfully blocked DDL, multi-statement and injection attacks")
+
+        # Cleanup dataset via delete endpoint
+        r_del_ds = await client.delete("/api/duckdb/datasets/analytics_sample", headers=headers)
+        assert r_del_ds.status_code == 200
 
         # 7. Test Dashboards & Workspace Scopes (My Workspace vs Public Workspace)
         r_dashboards = await client.get("/api/dashboards", headers=headers)
@@ -169,6 +218,7 @@ async def test_all():
         print(f"✓ Superset Agent handled dataset discovery and emitted {len(superset_events)} event chunks")
 
     print("\nALL PERSONA, DARK THEME & REPO TESTS PASSED! 🚀")
+    TEST_DB_PATH.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     asyncio.run(test_all())

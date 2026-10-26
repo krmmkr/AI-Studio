@@ -56,12 +56,15 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
   const agentDropdownRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const activePersona = personas.find((p) => p.id === activeAgentId) || personas[0];
   const promptSuggestions = activeAgentId === 'superset-agent' ? SUPERSET_PROMPTS : GITHUB_PROMPTS;
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    }
   };
 
   useEffect(() => {
@@ -162,6 +165,19 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
         onError: (err) => {
           console.error('Stream error:', err);
           setIsStreaming(false);
+          const errorMsgText = typeof err === 'string' ? err : (err as any)?.message || 'An error occurred during agent execution.';
+          const errorNotice = streamedAssistantContent
+            ? `${streamedAssistantContent}\n\n⚠️ **Stream Notice**: ${errorMsgText}`
+            : `⚠️ **Execution Notice**: ${errorMsgText}\n\n*(Please try sending your prompt again.)*`;
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === 'assistant') {
+              return [...prev.slice(0, -1), { ...last, content: errorNotice }];
+            }
+            return [...prev, { role: 'assistant', content: errorNotice }];
+          });
+          setActiveThoughts([]);
+          setActiveToolCalls([]);
         },
       },
       activeAgentId
@@ -269,7 +285,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
       </div>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-4">
             <div className="w-12 h-12 rounded-3xl bg-m3-primary-container text-m3-on-primary-container flex items-center justify-center mb-3">

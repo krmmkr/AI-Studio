@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from backend.app.auth import get_current_user
 from backend.app.database import get_db
 from backend.app.models import User, DatasetFile
-from backend.app.services.file_storage import save_user_file, read_user_file
+from backend.app.services.file_storage import save_user_file, read_user_file, safe_resolve_path
 
 router = APIRouter(prefix="/api/files", tags=["files"])
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB ceiling
 
 @router.get("")
 def list_files(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -43,6 +45,26 @@ def download_file(file_id: str, current_user: User = Depends(get_current_user), 
         headers={"Content-Disposition": f'attachment; filename="{record.filename}"'}
     )
 
+@router.delete("/{file_id}")
+def delete_file(file_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    record = db.query(DatasetFile).filter(
+        DatasetFile.id == file_id,
+        DatasetFile.user_id == current_user.id
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        disk_path = safe_resolve_path(current_user.id, record.relative_path)
+        if disk_path.exists() and disk_path.is_file():
+            disk_path.unlink()
+    except Exception:
+        pass
+
+    db.delete(record)
+    db.commit()
+    return {"success": True, "id": file_id, "message": "File removed"}
+
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -50,7 +72,18 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    content = await file.read()
+    chunks = []
+    total_size = 0
+    while chunk := await file.read(1024 * 1024):  # 1MB chunk
+        total_size += len(chunk)
+        if total_size > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File exceeds maximum allowed size of 50MB."
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks)
+
     file_id, relative_path, size = save_user_file(current_user.id, file.filename or "upload.dat", content)
 
     record = DatasetFile(

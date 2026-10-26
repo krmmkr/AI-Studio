@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatMessage, DashboardWidget, AgentPersona } from '../../types';
+import { ChatMessage, DashboardWidget, AgentPersona, ChatSession, DatasetProposal, UserInquiry } from '../../types';
 import { MessageItem } from '../Chat/MessageItem';
 import { chatApi } from '../../api/client';
 import {
   X,
   Send,
-  Loader2,
   ChevronDown,
   GitPullRequest,
   BarChart3,
@@ -15,6 +14,8 @@ import {
   MessageSquare,
   Trash2,
   Bot,
+  AlertTriangle,
+  Square,
 } from 'lucide-react';
 
 interface DashboardCopilotDrawerProps {
@@ -26,12 +27,6 @@ interface DashboardCopilotDrawerProps {
   initialAgentId?: string;
   initialPrompt?: string;
   onCanvasAction: (action: { action: string; widget: DashboardWidget }) => void;
-}
-
-interface CopilotChatSession {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
 }
 
 export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
@@ -64,21 +59,91 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
   // Chat session dropdown state
   const [chatDropdownOpen, setChatDropdownOpen] = useState(false);
   const chatDropdownRef = useRef<HTMLDivElement>(null);
+  const [sessionToDelete, setSessionToDelete] = useState<{ id: string; title: string } | null>(null);
+  const [isDeletingSession, setIsDeletingSession] = useState(false);
 
-  // Multi-chat sessions state (up to 5 chats with fresh context)
-  const [sessions, setSessions] = useState<CopilotChatSession[]>([
-    {
-      id: `session-1`,
-      title: 'Chat 1',
-      messages: [],
-    },
-  ]);
-  const [activeSessionId, setActiveSessionId] = useState<string>('session-1');
+  // Unified backend chat sessions state (strictly scoped to this dashboard)
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+  // Load unified chat sessions attached to this dashboard
+  useEffect(() => {
+    if (!isOpen || !dashboardId) return;
+    loadDashboardSessions();
+  }, [isOpen, dashboardId]);
+
+  const loadDashboardSessions = async (targetSessionId?: string) => {
+    if (!dashboardId) return;
+    try {
+      const data = await chatApi.listSessions(dashboardId);
+      if (data.length > 0) {
+        setSessions(data);
+        const savedId = localStorage.getItem(`copilot_active_${dashboardId}`);
+        const selectedId =
+          targetSessionId ||
+          (savedId && data.some((s) => s.id === savedId) ? savedId : data[0].id);
+        setActiveSessionId(selectedId);
+        loadSessionMessages(selectedId);
+      } else {
+        // Automatically create initial session for this dashboard
+        const newSession = await chatApi.createSession("Dashboard Copilot", dashboardId);
+        setSessions([newSession]);
+        setActiveSessionId(newSession.id);
+        setMessages([]);
+      }
+    } catch (e) {
+      console.error('Failed to load dashboard copilot sessions:', e);
+    }
+  };
+
+  const loadSessionMessages = async (sessionId: string) => {
+    try {
+      const msgs = await chatApi.getMessages(sessionId);
+      setMessages(msgs);
+    } catch (e) {
+      console.error('Failed to load copilot messages:', e);
+      setMessages([]);
+    }
+  };
+
+  const handleSelectSession = (sessionId: string) => {
+    if (sessionId === activeSessionId || isStreaming) return;
+    setActiveSessionId(sessionId);
+    if (dashboardId) {
+      localStorage.setItem(`copilot_active_${dashboardId}`, sessionId);
+    }
+    setChatDropdownOpen(false);
+    setActiveThoughts([]);
+    loadSessionMessages(sessionId);
+  };
 
   const [inputPrompt, setInputPrompt] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeThoughts, setActiveThoughts] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleStopExecution = async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (activeSessionId) {
+      try {
+        await chatApi.stopSession(activeSessionId);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen && isStreaming) {
+      handleStopExecution();
+    }
+  }, [isOpen, isStreaming]);
 
   // Outside click listener for dropdowns
   useEffect(() => {
@@ -114,86 +179,206 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
         };
   const currentSession = sessions.find((s) => s.id === activeSessionId) || sessions[0];
 
+  // Scroll strictly inside the drawer's message container (prevents ancestor canvas jumping)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentSession.messages, activeThoughts]);
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    }
+  }, [messages, activeThoughts]);
 
   if (!isOpen) return null;
 
-  const handleNewChat = () => {
-    if (sessions.length >= 5) return;
-    const nextNum = sessions.length + 1;
-    const newSession: CopilotChatSession = {
-      id: `session-${Date.now()}`,
-      title: `Chat ${nextNum}`,
-      messages: [],
-    };
-    setSessions((prev) => [...prev, newSession]);
-    setActiveSessionId(newSession.id);
-    setActiveThoughts([]);
+  const handleNewChat = async () => {
+    if (!dashboardId || isStreaming) return;
+    try {
+      const nextNum = sessions.length + 1;
+      const newSession = await chatApi.createSession(`Chat ${nextNum}`, dashboardId);
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(newSession.id);
+      if (dashboardId) {
+        localStorage.setItem(`copilot_active_${dashboardId}`, newSession.id);
+      }
+      setMessages([]);
+      setActiveThoughts([]);
+      setInputPrompt('');
+      setChatDropdownOpen(false);
+    } catch (e) {
+      console.error('Failed to create new copilot chat:', e);
+    }
   };
 
-  const handleDeleteSession = (idToDelete: string) => {
-    if (sessions.length <= 1) return;
-    const nextSessions = sessions.filter((s) => s.id !== idToDelete);
-    setSessions(nextSessions);
-    if (activeSessionId === idToDelete) {
-      setActiveSessionId(nextSessions[0].id);
+  const handleConfirmDeleteSession = async () => {
+    if (!sessionToDelete || isDeletingSession) return;
+    const idToDelete = sessionToDelete.id;
+    try {
+      setIsDeletingSession(true);
+      await chatApi.deleteSession(idToDelete);
+      const remaining = sessions.filter((s) => s.id !== idToDelete);
+      setSessions(remaining);
+      setSessionToDelete(null);
+      if (activeSessionId === idToDelete) {
+        if (remaining.length > 0) {
+          handleSelectSession(remaining[0].id);
+        } else {
+          handleNewChat();
+        }
+      }
+    } catch (e) {
+      console.error('Failed to delete copilot session:', e);
+    } finally {
+      setIsDeletingSession(false);
     }
   };
 
   const handleSend = async (textToSend?: string) => {
     const text = (textToSend || inputPrompt).trim();
-    if (!text || isStreaming) return;
+    if (!text || isStreaming || !activeSessionId) return;
 
     setInputPrompt('');
-    const userMsg: ChatMessage = { role: 'user', content: text };
+    const userMsg: ChatMessage = {
+      id: Date.now(),
+      role: 'user',
+      content: text,
+      created_at: new Date().toISOString(),
+    };
 
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === currentSession.id ? { ...s, messages: [...s.messages, userMsg] } : s
-      )
-    );
+    setMessages((prev) => [...prev, userMsg]);
     setIsStreaming(true);
     setActiveThoughts([]);
 
     let streamedContent = '';
+    const thoughtsAccum: string[] = [];
+    const toolCallsAccum: any[] = [];
+    const proposalsAccum: DatasetProposal[] = [];
+    const inquiriesAccum: UserInquiry[] = [];
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const autoCancelTimer = window.setTimeout(() => {
+      handleStopExecution();
+    }, 300000); // 5-minute auto-cancel safeguard
+
+    const syncStreamingAssistantMessage = () => {
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last && last.role === 'assistant') {
+          next[next.length - 1] = {
+            ...last,
+            content: streamedContent,
+            thoughts: thoughtsAccum.join('\n'),
+            tool_calls: [...toolCallsAccum],
+            proposals: proposalsAccum.length > 0 ? [...proposalsAccum] : undefined,
+            inquiries: inquiriesAccum.length > 0 ? [...inquiriesAccum] : undefined,
+          };
+        } else {
+          next.push({
+            id: Date.now() + 1,
+            role: 'assistant',
+            content: streamedContent,
+            thoughts: thoughtsAccum.join('\n'),
+            tool_calls: [...toolCallsAccum],
+            proposals: proposalsAccum.length > 0 ? [...proposalsAccum] : undefined,
+            inquiries: inquiriesAccum.length > 0 ? [...inquiriesAccum] : undefined,
+            created_at: new Date().toISOString(),
+          });
+        }
+        return next;
+      });
+    };
 
     await chatApi.streamPrompt(
-      `dash-${currentSession.id}-${dashboardId || 'default'}`,
+      activeSessionId,
       text,
       dashboardId,
       {
-        onThought: (thought) => setActiveThoughts((prev) => [...prev, thought]),
-        onToolCall: (call) => console.log('Tool call:', call),
-        onToolResult: (res) => console.log('Tool result:', res),
+        onThought: (thought) => {
+          thoughtsAccum.push(thought);
+          setActiveThoughts([...thoughtsAccum]);
+          syncStreamingAssistantMessage();
+        },
+        onToolCall: (call) => {
+          toolCallsAccum.push({ ...call, status: 'running' });
+          syncStreamingAssistantMessage();
+        },
+        onToolResult: (res) => {
+          for (let i = toolCallsAccum.length - 1; i >= 0; i--) {
+            if (toolCallsAccum[i].name === res.name && toolCallsAccum[i].status === 'running') {
+              toolCallsAccum[i] = {
+                ...toolCallsAccum[i],
+                result: res.result || res,
+                status: res.result?.error ? 'error' : 'completed',
+              };
+              break;
+            }
+          }
+          syncStreamingAssistantMessage();
+        },
+        onProposal: (prop) => {
+          proposalsAccum.push(prop);
+          syncStreamingAssistantMessage();
+        },
+        onInquiry: (inq) => {
+          inquiriesAccum.push(inq);
+          syncStreamingAssistantMessage();
+        },
         onToken: (token) => {
           streamedContent += token;
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== currentSession.id) return s;
-              const msgs = [...s.messages];
-              const last = msgs[msgs.length - 1];
-              if (last && last.role === 'assistant') {
-                msgs[msgs.length - 1] = { ...last, content: streamedContent };
-              } else {
-                msgs.push({ role: 'assistant', content: streamedContent });
-              }
-              return { ...s, messages: msgs };
-            })
-          );
+          syncStreamingAssistantMessage();
         },
         onCanvasAction: (action) => onCanvasAction(action),
-        onDone: () => {
+        onDone: async () => {
+          window.clearTimeout(autoCancelTimer);
+          abortControllerRef.current = null;
           setIsStreaming(false);
           setActiveThoughts([]);
+          loadSessionMessages(activeSessionId);
+          if (dashboardId) {
+            chatApi.listSessions(dashboardId).then(setSessions).catch(() => {});
+          }
         },
         onError: (err) => {
-          console.error('Copilot error:', err);
+          window.clearTimeout(autoCancelTimer);
+          abortControllerRef.current = null;
+          console.error('Copilot stream error:', err);
           setIsStreaming(false);
+          const errorMsgText = typeof err === 'string' ? err : err?.message || 'An error occurred during agent execution.';
+          const errorNotice = streamedContent
+            ? `${streamedContent}\n\n⚠️ **Stream Notice**: ${errorMsgText}`
+            : `⚠️ **Execution Notice**: ${errorMsgText}\n\n*(Please try sending your prompt again.)*`;
+          setMessages((prev) => {
+            const next = [...prev];
+            let lastIdx = -1;
+            for (let i = next.length - 1; i >= 0; i--) {
+              if (next[i].role === 'assistant') {
+                lastIdx = i;
+                break;
+              }
+            }
+            if (lastIdx >= 0 && next[lastIdx].id === -1) {
+              next[lastIdx] = {
+                ...next[lastIdx],
+                id: Date.now(),
+                content: errorNotice,
+              };
+            } else {
+              next.push({
+                id: Date.now(),
+                role: 'assistant',
+                content: errorNotice,
+                thoughts: thoughtsAccum.join('\n'),
+                created_at: new Date().toISOString(),
+              });
+            }
+            return next;
+          });
+          setActiveThoughts([]);
+          loadSessionMessages(activeSessionId);
         },
       },
-      selectedAgentId
+      {
+        agentId: selectedAgentId,
+        signal: controller.signal,
+      }
     );
   };
 
@@ -204,22 +389,14 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
     return <Code2 className="w-3.5 h-3.5 text-m3-secondary" />;
   };
 
-  const samplePrompts =
-    selectedAgentId === 'superset-agent'
-      ? [
-          'List available Superset datasets in the catalog',
-          'Build a regional revenue bar chart from customer transactions',
-          'Create query performance latency chart across engines',
-          'Add SaaS monthly ARR growth and expansion chart',
-        ]
-      : [
-          'Add a high-priority code review audit card for PRs',
-          'Analyze weekly commit churn and project a chart here',
-          'Audit PR turnaround velocity and code health',
-        ];
+  const samplePrompts = [
+    'Analyze cloned repositories and chart top contributors by commits',
+    'Create a commit velocity and conventional commit breakdown chart',
+    'Generate an engineering repository report card on this canvas',
+  ];
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[460px] bg-m3-surface border-l border-m3-outline-variant/30 shadow-2xl flex flex-col animate-slideLeft transition-colors">
+    <div className="fixed inset-y-0 right-0 z-[60] w-full sm:w-[460px] bg-m3-surface border-l border-m3-outline-variant/30 shadow-2xl flex flex-col animate-slideLeft transition-colors">
       {/* Header */}
       <div className="p-3.5 border-b border-m3-outline-variant/20 bg-m3-surface-container-low flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 truncate">
@@ -246,44 +423,47 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
               title="Switch chat session or start a new chat"
             >
               <MessageSquare className="w-3 h-3 text-m3-primary" />
-              <span>{currentSession.title}</span>
+              <span>{currentSession?.title || 'Chat'}</span>
               <ChevronDown className="w-3 h-3 text-m3-on-surface-variant" />
             </button>
 
             {chatDropdownOpen && (
-              <div className="absolute right-0 mt-1.5 w-52 rounded-2xl bg-m3-surface p-1.5 shadow-xl border border-m3-outline-variant/30 z-30 flex flex-col gap-1 animate-fadeIn">
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-m3-on-surface-variant">
-                  Chat Sessions
+              <div className="absolute right-0 mt-1.5 w-60 rounded-2xl bg-m3-surface p-1.5 shadow-xl border border-m3-outline-variant/30 z-30 flex flex-col gap-1 animate-fadeIn">
+                <div className="flex items-center justify-between px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-m3-on-surface-variant">
+                  <span>Chat Threads</span>
+                  <span className="px-1.5 py-0.5 rounded-full bg-m3-surface-container font-mono text-[9px] font-semibold text-m3-primary">
+                    {sessions.length} Active
+                  </span>
                 </div>
 
-                {sessions.map((s) => (
-                  <div
-                    key={s.id}
-                    onClick={() => {
-                      setActiveSessionId(s.id);
-                      setChatDropdownOpen(false);
-                    }}
-                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs cursor-pointer transition-colors ${
-                      s.id === currentSession.id
-                        ? 'bg-m3-primary-container text-m3-on-primary-container font-semibold'
-                        : 'hover:bg-m3-surface-container text-m3-on-surface'
-                    }`}
-                  >
-                    <span className="truncate">{s.title}</span>
-                    {sessions.length > 1 && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteSession(s.id);
-                        }}
-                        className="p-1 hover:bg-black/10 rounded-full text-m3-on-surface-variant transition-colors"
-                        title="Delete chat"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                ))}
+                <div className="max-h-72 overflow-y-auto pr-0.5 space-y-0.5">
+                  {sessions.map((s) => (
+                    <div
+                      key={s.id}
+                      onClick={() => handleSelectSession(s.id)}
+                      className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs cursor-pointer transition-colors ${
+                        s.id === (currentSession?.id || activeSessionId)
+                          ? 'bg-m3-primary-container text-m3-on-primary-container font-semibold'
+                          : 'hover:bg-m3-surface-container text-m3-on-surface'
+                      }`}
+                    >
+                      <span className="truncate max-w-[170px]">{s.title}</span>
+                      {sessions.length > 1 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSessionToDelete({ id: s.id, title: s.title });
+                            setChatDropdownOpen(false);
+                          }}
+                          className="p-1 hover:bg-black/10 rounded-full text-m3-on-surface-variant hover:text-m3-error transition-colors"
+                          title="Delete thread"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
 
                 <div className="h-px bg-m3-outline-variant/20 my-0.5" />
 
@@ -295,7 +475,7 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
                   className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold text-m3-primary hover:bg-m3-primary-container/30 transition-colors text-left"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>+ New Chat</span>
+                  <span>New Chat Thread</span>
                 </button>
               </div>
             )}
@@ -376,8 +556,8 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {currentSession.messages.length === 0 ? (
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 text-center text-m3-on-surface-variant p-4">
             <div className="w-10 h-10 rounded-2xl bg-m3-surface-container-highest flex items-center justify-center text-m3-primary mb-3">
               <Sparkles className="w-5 h-5" />
@@ -406,20 +586,44 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
             </div>
           </div>
         ) : (
-          currentSession.messages.map((m, idx) => <MessageItem key={idx} message={m} />)
-        )}
-
-        {/* Live Thoughts Accordion / Pulse */}
-        {isStreaming && activeThoughts.length > 0 && (
-          <div className="p-3 rounded-2xl bg-m3-surface-container-low border border-m3-primary/30 text-xs animate-pulse">
-            <span className="font-bold text-m3-primary block mb-1 flex items-center gap-1.5">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Agent Reasoning:
-            </span>
-            <p className="font-mono text-[11px] text-m3-on-surface-variant">
-              {activeThoughts[activeThoughts.length - 1]}
-            </p>
-          </div>
+          messages.map((m, idx) => {
+            const findPrevUser = () => {
+              for (let i = idx - 1; i >= 0; i--) {
+                if (messages[i]?.role === 'user' && messages[i]?.content) {
+                  return messages[i].content;
+                }
+              }
+              return '';
+            };
+            return (
+              <MessageItem
+                key={m.id || idx}
+                message={m}
+                isStreaming={isStreaming && idx === messages.length - 1 && m.role === 'assistant'}
+                onSelectSuggestion={(suggestion) => handleSend(suggestion)}
+                onRetryMessage={
+                  m.role === 'assistant'
+                    ? () => {
+                        const prev = findPrevUser();
+                        if (prev) handleSend(prev);
+                      }
+                    : undefined
+                }
+                onMountToCanvas={(spec, title) =>
+                  onCanvasAction({
+                    action: 'create_widget',
+                    widget: {
+                      id: `manual-mount-${Date.now()}`,
+                      title: title || 'Visual',
+                      widget_type: 'echarts',
+                      spec: spec,
+                      grid: { x: 0, y: 0, w: 6, h: 4 },
+                    },
+                  })
+                }
+              />
+            );
+          })
         )}
 
         <div ref={messagesEndRef} />
@@ -438,18 +642,72 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
             type="text"
             value={inputPrompt}
             onChange={(e) => setInputPrompt(e.target.value)}
+            disabled={isStreaming}
             placeholder={`Ask ${currentPersona.name.split(' ')[0]}...`}
             className="flex-1 bg-transparent border-none outline-none text-xs text-m3-on-surface placeholder:text-m3-on-surface-variant/70"
           />
-          <button
-            type="submit"
-            disabled={!inputPrompt.trim() || isStreaming}
-            className="w-8 h-8 rounded-full bg-m3-primary text-m3-on-primary flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity shadow-xs"
-          >
-            <Send className="w-3.5 h-3.5" />
-          </button>
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={handleStopExecution}
+              className="inline-flex items-center gap-1 px-3 h-8 rounded-full bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-xs transition-colors"
+              title="Stop execution"
+            >
+              <Square className="w-3 h-3 fill-current" />
+              <span>Stop</span>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!inputPrompt.trim()}
+              className="w-8 h-8 rounded-full bg-m3-primary text-m3-on-primary flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity shadow-xs"
+            >
+              <Send className="w-3.5 h-3.5" />
+            </button>
+          )}
         </form>
       </div>
+
+      {/* Delete Chat Confirmation Modal */}
+      {sessionToDelete && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-m3-surface rounded-3xl max-w-xs w-full p-5 shadow-2xl border border-m3-outline-variant/30 flex flex-col gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-2xl bg-red-500/15 text-red-500 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-xs font-bold text-m3-on-surface">Delete Thread?</h3>
+                <p className="text-[11px] text-m3-on-surface-variant truncate">
+                  "{sessionToDelete.title}"
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-m3-on-surface-variant/80 bg-m3-surface-container-low p-2 rounded-xl border border-m3-outline-variant/20">
+              This will permanently delete this assistant thread and its messages.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setSessionToDelete(null)}
+                className="px-3 py-1.5 rounded-full text-xs font-medium text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-container transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteSession}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-red-600 hover:bg-red-700 text-white shadow-xs transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-white" />
+                <span>Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

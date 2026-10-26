@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from backend.app.auth import get_current_user
+from backend.app.auth import get_current_user, encrypt_secret, decrypt_secret
 from backend.app.database import get_db
 from backend.app.models import User, MCPConfig
 from backend.app.services.mcp_client import mcp_manager
@@ -19,8 +19,9 @@ class MCPCreateRequest(BaseModel):
 
 class MCPTestRequest(BaseModel):
     url: str
-    transport: str = "sse"
+    transport: str = "streamable_http"
     auth_header: str | None = None
+    mcp_id: int | None = None
 
 @router.get("")
 def list_mcps(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -61,7 +62,7 @@ def create_mcp(payload: MCPCreateRequest, current_user: User = Depends(get_curre
         scope=payload.scope,
         transport=payload.transport,
         url=str(payload.url),
-        auth_header=payload.auth_header,
+        auth_header=encrypt_secret(payload.auth_header) if payload.auth_header else None,
         is_active=True,
         user_id=current_user.id if payload.scope == "user" else None
     )
@@ -84,6 +85,27 @@ def toggle_mcp(mcp_id: int, current_user: User = Depends(get_current_user), db: 
     db.commit()
     return {"id": config.id, "is_active": config.is_active}
 
+@router.put("/{mcp_id}")
+def update_mcp(mcp_id: int, payload: MCPCreateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    config = db.query(MCPConfig).filter(MCPConfig.id == mcp_id).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="MCP config not found")
+    if config.scope == "global" and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Cannot edit global configuration")
+    if config.scope == "user" and config.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    config.name = payload.name
+    config.description = payload.description
+    config.scope = payload.scope
+    config.transport = payload.transport
+    config.url = str(payload.url)
+    if payload.auth_header and payload.auth_header.strip():
+        config.auth_header = encrypt_secret(payload.auth_header.strip())
+    db.commit()
+    db.refresh(config)
+    return {"message": "MCP server updated successfully", "id": config.id}
+
 @router.delete("/{mcp_id}")
 def delete_mcp(mcp_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     config = db.query(MCPConfig).filter(MCPConfig.id == mcp_id).first()
@@ -99,11 +121,29 @@ def delete_mcp(mcp_id: int, current_user: User = Depends(get_current_user), db: 
     return {"message": "MCP server removed"}
 
 @router.post("/test")
-async def test_mcp(payload: MCPTestRequest):
+async def test_mcp(payload: MCPTestRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    effective_auth = payload.auth_header.strip() if payload.auth_header else None
+    if not effective_auth:
+        matched_cfg = None
+        if payload.mcp_id:
+            matched_cfg = db.query(MCPConfig).filter(MCPConfig.id == payload.mcp_id).first()
+        if not matched_cfg and payload.url:
+            clean_url = payload.url.strip().rstrip("/")
+            matched_cfg = (
+                db.query(MCPConfig)
+                .filter(
+                    or_(MCPConfig.scope == "global", MCPConfig.user_id == current_user.id),
+                    or_(MCPConfig.url == payload.url.strip(), MCPConfig.url == clean_url, MCPConfig.url == f"{clean_url}/mcp"),
+                )
+                .first()
+            )
+        if matched_cfg and matched_cfg.auth_header:
+            effective_auth = decrypt_secret(matched_cfg.auth_header)
+
     result = await mcp_manager.test_endpoint(
         url=payload.url,
         transport=payload.transport,
-        auth_header=payload.auth_header
+        auth_header=effective_auth
     )
     return result
 
@@ -117,6 +157,14 @@ async def get_active_tools(current_user: User = Depends(get_current_user), db: S
         MCPConfig.is_active == True
     ).all()
     
-    cfg_dicts = [{"name": c.name, "url": c.url, "transport": c.transport} for c in configs]
+    cfg_dicts = [
+        {
+            "name": c.name,
+            "url": c.url,
+            "transport": c.transport,
+            "auth_header": decrypt_secret(c.auth_header) if c.auth_header else None,
+        }
+        for c in configs
+    ]
     tools = await mcp_manager.list_tools_for_configs(cfg_dicts)
     return tools

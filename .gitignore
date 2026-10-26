@@ -58,6 +58,8 @@ local_data/*.db*
 local_data/*.wal
 local_data/*.shm
 local_data/storage/
+local_data/repos/
+*_report.md
 
 # Environment files & secrets
 .env

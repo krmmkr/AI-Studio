@@ -17,7 +17,8 @@ import {
   ExternalLink,
   Table as TableIcon,
   HardDrive,
-  Cpu,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 
 interface MCPSettingsModalProps {
@@ -38,6 +39,7 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
   initialTab = 'mcp',
 }) => {
   const [activeTab, setActiveTab] = useState<'mcp' | 'duckdb' | 'git' | 'tools' | 'add'>(initialTab);
+  const [isMaximized, setIsMaximized] = useState(false);
   const [configs, setConfigs] = useState<MCPConfig[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [duckdbDatasets, setDuckdbDatasets] = useState<any[]>([]);
@@ -45,15 +47,18 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [syncingRepoId, setSyncingRepoId] = useState<number | null>(null);
 
-  // Add form state
+  // Add / Edit form state
+  const [editingMcpId, setEditingMcpId] = useState<number | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [scope, setScope] = useState<'user' | 'global'>('user');
-  const [transport, setTransport] = useState<'sse' | 'http'>('sse');
+  const [transport, setTransport] = useState<'streamable_http' | 'sse' | 'http'>('streamable_http');
   const [url, setUrl] = useState('');
   const [authHeader, setAuthHeader] = useState('');
   const [testResult, setTestResult] = useState<any>(null);
   const [testing, setTesting] = useState(false);
+  const [testingCardId, setTestingCardId] = useState<number | null>(null);
+  const [cardTestResults, setCardTestResults] = useState<Record<number, any>>({});
 
   const fetchAllDatasources = async () => {
     try {
@@ -89,7 +94,12 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
     try {
       setTesting(true);
       setTestResult(null);
-      const res = await mcpApi.test({ url, transport, auth_header: authHeader || undefined });
+      const res = await mcpApi.test({
+        url,
+        transport,
+        auth_header: authHeader || undefined,
+        mcp_id: editingMcpId || undefined,
+      });
       setTestResult(res);
     } catch (e: any) {
       setTestResult({ success: false, message: e.message });
@@ -98,20 +108,63 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
     }
   };
 
+  const handleTestSavedServer = async (c: MCPConfig) => {
+    try {
+      setTestingCardId(c.id);
+      const res = await mcpApi.test({
+        url: c.url,
+        transport: c.transport,
+        mcp_id: c.id,
+      });
+      setCardTestResults((prev) => ({ ...prev, [c.id]: res }));
+    } catch (e: any) {
+      setCardTestResults((prev) => ({
+        ...prev,
+        [c.id]: { success: false, message: e.message },
+      }));
+    } finally {
+      setTestingCardId(null);
+    }
+  };
+
+  const handleEditServer = (c: MCPConfig) => {
+    setEditingMcpId(c.id);
+    setName(c.name);
+    setDescription(c.description || '');
+    setScope(c.scope);
+    setTransport(c.transport || 'streamable_http');
+    setUrl(c.url);
+    setAuthHeader('');
+    setTestResult(null);
+    setActiveTab('add');
+  };
+
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !url) return;
 
     try {
-      await mcpApi.create({
-        name,
-        description: description || undefined,
-        scope,
-        transport,
-        url,
-        auth_header: authHeader || undefined,
-      });
+      if (editingMcpId) {
+        await mcpApi.update(editingMcpId, {
+          name,
+          description: description || undefined,
+          scope,
+          transport,
+          url,
+          auth_header: authHeader || undefined,
+        });
+      } else {
+        await mcpApi.create({
+          name,
+          description: description || undefined,
+          scope,
+          transport,
+          url,
+          auth_header: authHeader || undefined,
+        });
+      }
       // Reset
+      setEditingMcpId(null);
       setName('');
       setDescription('');
       setUrl('');
@@ -120,7 +173,7 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
       setActiveTab('mcp');
       fetchAllDatasources();
     } catch (e: any) {
-      alert(e.message || 'Failed to add MCP');
+      alert(e.message || 'Failed to save MCP');
     }
   };
 
@@ -157,10 +210,14 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fadeIn">
-      <div className="bg-m3-surface rounded-4xl max-w-3xl w-full p-6 shadow-2xl border border-m3-outline-variant/30 max-h-[88vh] flex flex-col">
+    <div className={`fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-xs animate-fadeIn ${isMaximized ? 'p-0' : 'p-4'}`}>
+      <div className={`bg-m3-surface shadow-2xl border border-m3-outline-variant/30 flex flex-col transition-all duration-200 ${
+        isMaximized
+          ? 'w-screen h-screen rounded-none p-6'
+          : 'rounded-4xl w-[92vw] max-w-5xl h-[85vh] min-h-[620px] p-6'
+      }`}>
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-m3-outline-variant/20">
+        <div className="flex items-center justify-between pb-4 border-b border-m3-outline-variant/20 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-m3-primary/10 text-m3-primary flex items-center justify-center">
               <Database className="w-5 h-5" />
@@ -174,76 +231,66 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-full hover:bg-m3-surface-container-high transition-colors text-m3-on-surface-variant hover:text-m3-on-surface"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setIsMaximized(!isMaximized)}
+              title={isMaximized ? 'Restore window size' : 'Maximize Fullscreen'}
+              className="p-2 rounded-full hover:bg-m3-surface-container-high transition-colors text-m3-on-surface-variant hover:text-m3-on-surface"
+            >
+              {isMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-full hover:bg-m3-surface-container-high transition-colors text-m3-on-surface-variant hover:text-m3-on-surface"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* Tab Switcher Pills */}
-        <div className="flex items-center justify-between my-4 flex-wrap gap-2">
-          <div className="flex gap-1.5 bg-m3-surface-container-low p-1.5 rounded-full flex-wrap border border-m3-outline-variant/20">
-            <button
-              onClick={() => setActiveTab('mcp')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                activeTab === 'mcp'
-                  ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                  : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-              }`}
+        {/* Section Selector Dropdown & Connect Action */}
+        <div className="flex items-center justify-between my-4 flex-wrap gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
+            <label className="text-xs font-semibold text-m3-on-surface-variant shrink-0">
+              Datasource Category:
+            </label>
+            <select
+              value={activeTab}
+              onChange={(e) => setActiveTab(e.target.value as any)}
+              className="flex-1 max-w-md px-3.5 py-2 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs font-semibold text-m3-on-surface outline-none focus:border-m3-primary cursor-pointer"
             >
-              <Cpu className="w-3.5 h-3.5" />
-              <span>Live MCPs ({configs.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('duckdb')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                activeTab === 'duckdb'
-                  ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                  : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-              }`}
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>DuckDB Datasets ({duckdbDatasets.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('git')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                activeTab === 'git'
-                  ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                  : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-              }`}
-            >
-              <GitBranch className="w-3.5 h-3.5" />
-              <span>Git Clones ({repositories.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('tools')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                activeTab === 'tools'
-                  ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                  : 'text-m3-on-surface-variant hover:text-m3-on-surface'
-              }`}
-            >
-              <Wrench className="w-3.5 h-3.5" />
-              <span>Tools ({tools.length})</span>
-            </button>
+              <option value="mcp">Live MCP Servers ({configs.length})</option>
+              <option value="duckdb">DuckDB & Derived Datasets ({duckdbDatasets.length})</option>
+              <option value="git">Local Git Clones ({repositories.length})</option>
+              <option value="tools">Advertised MCP Tools ({tools.length})</option>
+            </select>
           </div>
 
           <button
-            onClick={() => setActiveTab('add')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
+            type="button"
+            onClick={() => {
+              if (activeTab === 'add') {
+                setEditingMcpId(null);
+                setActiveTab('mcp');
+              } else {
+                setEditingMcpId(null);
+                setName('');
+                setDescription('');
+                setUrl('');
+                setAuthHeader('');
+                setTestResult(null);
+                setActiveTab('add');
+              }
+            }}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all cursor-pointer ${
               activeTab === 'add'
-                ? 'bg-m3-primary text-m3-on-primary shadow-xs'
-                : 'bg-m3-surface-container-high hover:bg-m3-surface-container text-m3-on-surface border border-m3-outline-variant/30'
+                ? 'bg-m3-surface-container-high text-m3-on-surface'
+                : 'bg-m3-primary text-m3-on-primary shadow-xs hover:opacity-90'
             }`}
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Connect MCP</span>
+            <span>{activeTab === 'add' ? 'View MCP Servers' : 'Connect MCP'}</span>
           </button>
         </div>
 
@@ -267,49 +314,99 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
                     configs.map((c) => (
                       <div
                         key={c.id}
-                        className="p-4 rounded-3xl bg-m3-surface-container-low border border-m3-outline-variant/30 flex items-center justify-between"
+                        className="p-4 rounded-3xl bg-m3-surface-container-low border border-m3-outline-variant/30 flex flex-col gap-2"
                       >
-                        <div className="flex flex-col gap-1 max-w-[70%]">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-sm text-m3-on-surface">{c.name}</span>
-                            <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                                c.scope === 'global'
-                                  ? 'bg-indigo-500/15 text-indigo-400'
-                                  : 'bg-purple-500/15 text-purple-400'
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex flex-col gap-1 max-w-[65%]">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-semibold text-sm text-m3-on-surface">{c.name}</span>
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                                  c.scope === 'global'
+                                    ? 'bg-indigo-500/15 text-indigo-400'
+                                    : 'bg-purple-500/15 text-purple-400'
+                                }`}
+                              >
+                                {c.scope === 'global' ? <Globe className="w-3 h-3" /> : <User className="w-3 h-3" />}
+                                {c.scope.toUpperCase()}
+                              </span>
+                              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-m3-surface-container text-m3-on-surface-variant">
+                                {c.transport.toUpperCase()}
+                              </span>
+                              {c.has_auth && (
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">
+                                  Token Configured
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-m3-on-surface-variant truncate">{c.description || c.url}</p>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={() => handleTestSavedServer(c)}
+                              disabled={testingCardId === c.id}
+                              className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium bg-m3-surface-container-high hover:bg-m3-surface-container-highest text-m3-on-surface transition-colors cursor-pointer"
+                            >
+                              {testingCardId === c.id ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <PlayCircle className="w-3 h-3 text-m3-primary" />
+                              )}
+                              <span>Test</span>
+                            </button>
+
+                            {(c.is_owner || (isAdmin && c.scope === 'global')) && (
+                              <button
+                                type="button"
+                                onClick={() => handleEditServer(c)}
+                                className="px-3 py-1 rounded-full text-xs font-medium bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-on-surface transition-colors cursor-pointer"
+                              >
+                                Edit
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggle(c.id)}
+                              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
+                                c.is_active
+                                  ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30'
+                                  : 'bg-m3-surface-container text-m3-outline hover:bg-m3-surface-container-high'
                               }`}
                             >
-                              {c.scope === 'global' ? <Globe className="w-3 h-3" /> : <User className="w-3 h-3" />}
-                              {c.scope.toUpperCase()}
-                            </span>
-                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-m3-surface-container text-m3-on-surface-variant">
-                              {c.transport.toUpperCase()}
-                            </span>
+                              {c.is_active ? 'Active' : 'Disabled'}
+                            </button>
+
+                            {(c.is_owner || (isAdmin && c.scope === 'global')) && (
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(c.id)}
+                                className="px-2.5 py-1 rounded-full text-xs text-m3-error hover:bg-m3-error-container/40 transition-colors cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                            )}
                           </div>
-                          <p className="text-xs text-m3-on-surface-variant truncate">{c.description || c.url}</p>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => handleToggle(c.id)}
-                            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                              c.is_active
-                                ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30'
-                                : 'bg-m3-surface-container text-m3-outline hover:bg-m3-surface-container-high'
+                        {cardTestResults[c.id] && (
+                          <div
+                            className={`text-xs px-3 py-1.5 rounded-xl flex items-center gap-1.5 ${
+                              cardTestResults[c.id].success
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-m3-error/10 text-m3-error border border-m3-error/20'
                             }`}
                           >
-                            {c.is_active ? 'Active' : 'Disabled'}
-                          </button>
-
-                          {(c.is_owner || (isAdmin && c.scope === 'global')) && (
-                            <button
-                              onClick={() => handleDelete(c.id)}
-                              className="px-2.5 py-1 rounded-full text-xs text-m3-error hover:bg-m3-error-container/40 transition-colors"
-                            >
-                              Remove
-                            </button>
-                          )}
-                        </div>
+                            {cardTestResults[c.id].success ? (
+                              <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                            ) : (
+                              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                            <span className="truncate">{cardTestResults[c.id].message}</span>
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
@@ -351,22 +448,39 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
                           key={idx}
                           className="p-4 rounded-3xl bg-m3-surface-container-low border border-m3-outline-variant/30 flex flex-col gap-2"
                         >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-mono font-bold text-sm text-m3-on-surface">
                                 {ds.table_name}
                               </span>
-                              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-semibold border border-emerald-500/25">
+                              <span
+                                className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-semibold border ${
+                                  ds.is_derived
+                                    ? 'bg-purple-500/15 text-purple-400 border-purple-500/25'
+                                    : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
+                                }`}
+                              >
                                 {ds.engine}
                               </span>
+                              {ds.lineage?.source_name && (
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-m3-surface-container-high text-m3-primary font-semibold">
+                                  Source: {ds.lineage.source_name}
+                                </span>
+                              )}
                             </div>
                             <span className="text-xs font-mono text-m3-primary font-semibold">
                               {ds.row_count?.toLocaleString()} rows
                             </span>
                           </div>
 
+                          {ds.lineage?.derivation_summary && (
+                            <p className="text-[11px] text-m3-on-surface-variant">
+                              {ds.lineage.derivation_summary}
+                            </p>
+                          )}
+
                           {ds.columns && (
-                            <div className="flex flex-wrap gap-1.5 mt-1">
+                            <div className="flex flex-wrap gap-1.5 mt-0.5">
                               {ds.columns.map((c: string) => (
                                 <span
                                   key={c}
@@ -516,7 +630,7 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
                         required
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
-                        placeholder="http://localhost:3000/sse"
+                        placeholder="http://127.0.0.1:5008/mcp"
                         className="w-full px-3.5 py-2 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs text-m3-on-surface outline-none focus:border-m3-primary"
                       />
                     </div>
@@ -528,8 +642,9 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
                         onChange={(e) => setTransport(e.target.value as any)}
                         className="w-full px-3.5 py-2 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs text-m3-on-surface outline-none focus:border-m3-primary"
                       >
-                        <option value="sse">SSE (Server-Sent Events)</option>
-                        <option value="http">HTTP POST / REST</option>
+                        <option value="streamable_http">Streamable HTTP (/mcp — Superset 7.0 & FastMCP)</option>
+                        <option value="sse">SSE (Server-Sent Events /sse)</option>
+                        <option value="http">HTTP JSON-RPC POST</option>
                       </select>
                     </div>
                   </div>

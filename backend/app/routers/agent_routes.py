@@ -1,12 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import os
+import json
+import asyncio
 import subprocess
 import datetime
 from backend.app.auth import get_current_user
-from backend.app.database import get_db
+from backend.app.database import get_db, SessionLocal
 from backend.app.models import User, AgentPersona, LocalRepository
+from backend.app.services.git_service import git_service
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -24,7 +28,11 @@ class RepoCreatePayload(BaseModel):
     name: str
     remote_url: str
     clone_type: str = "full"
-    default_branch: str = "main"
+    default_branch: str = ""
+
+class RepoBranchPayload(BaseModel):
+    branch: str
+
 
 @router.get("")
 def list_agent_personas(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -99,18 +107,20 @@ def delete_agent_persona(
 @router.get("/repositories")
 def list_repositories(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     repos = db.query(LocalRepository).all()
-    return [
-        {
+    results = []
+    for r in repos:
+        is_cloned = git_service.is_repo_cloned(r.local_path)
+        results.append({
             "id": r.id,
             "name": r.name,
             "remote_url": r.remote_url,
             "local_path": r.local_path,
             "clone_type": r.clone_type,
             "default_branch": r.default_branch,
+            "is_cloned": is_cloned,
             "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None
-        }
-        for r in repos
-    ]
+        })
+    return results
 
 @router.post("/repositories")
 def register_repository(
@@ -118,21 +128,41 @@ def register_repository(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    existing = db.query(LocalRepository).filter(LocalRepository.name == payload.name).first()
+    safe_name = git_service.sanitize_repo_name(payload.name)
+    existing = db.query(LocalRepository).filter(LocalRepository.name == safe_name).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Repository with this name already registered")
+        raise HTTPException(status_code=400, detail=f"Repository '{safe_name}' is already registered in local storage catalog.")
 
-    local_path = f"/local_data/repos/{payload.name}"
+    try:
+        clone_result = git_service.clone_repository(
+            name=safe_name,
+            remote_url=payload.remote_url,
+            clone_type=payload.clone_type,
+            default_branch=payload.default_branch
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     repo = LocalRepository(
-        name=payload.name,
+        name=safe_name,
         remote_url=payload.remote_url,
-        local_path=local_path,
+        local_path=clone_result["local_path"],
         clone_type=payload.clone_type,
-        default_branch=payload.default_branch
+        default_branch=clone_result.get("branch", payload.default_branch),
+        last_synced_at=datetime.datetime.utcnow()
     )
     db.add(repo)
     db.commit()
-    return {"message": "Repository registered in local storage catalog", "id": repo.id, "local_path": local_path}
+    db.refresh(repo)
+
+    return {
+        "message": f"Successfully cloned repository '{safe_name}' into persistent local storage.",
+        "id": repo.id,
+        "local_path": repo.local_path,
+        "head_sha": clone_result.get("head_sha", ""),
+        "commit_count": clone_result.get("commit_count", 0),
+        "ingested_commits": clone_result.get("ingested_commits", 0)
+    }
 
 @router.post("/repositories/{repo_id}/sync")
 def sync_repository(
@@ -144,9 +174,27 @@ def sync_repository(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    try:
+        sync_result = git_service.sync_repository(
+            local_path=repo.local_path,
+            default_branch=repo.default_branch,
+            remote_url=repo.remote_url
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    repo.local_path = sync_result.get("local_path", repo.local_path)
+    repo.default_branch = sync_result.get("branch", repo.default_branch)
     repo.last_synced_at = datetime.datetime.utcnow()
     db.commit()
-    return {"message": f"Repository '{repo.name}' synced successfully", "last_synced_at": repo.last_synced_at.isoformat()}
+
+    return {
+        "message": f"Repository '{repo.name}' synced successfully.",
+        "last_synced_at": repo.last_synced_at.isoformat(),
+        "head_sha": sync_result.get("head_sha", ""),
+        "commit_count": sync_result.get("commit_count", 0),
+        "ingested_commits": sync_result.get("ingested_commits", 0)
+    }
 
 @router.delete("/repositories/{repo_id}")
 def delete_repository(
@@ -158,6 +206,101 @@ def delete_repository(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    # Clean up local repository directory from disk
+    git_service.delete_repository(repo.local_path)
+
     db.delete(repo)
     db.commit()
-    return {"message": f"Repository '{repo.name}' removed from local registry"}
+    return {"message": f"Repository '{repo.name}' removed from local registry and disk storage."}
+
+@router.get("/repositories/{repo_id}/branches")
+def get_repository_branches(
+    repo_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    repo = db.query(LocalRepository).filter(LocalRepository.id == repo_id).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    try:
+        branches_data = git_service.get_repository_branches(repo.local_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "repo_id": repo.id,
+        "name": repo.name,
+        "current_branch": branches_data.get("current_branch", repo.default_branch),
+        "branches": branches_data.get("branches", [repo.default_branch])
+    }
+
+@router.post("/repositories/{repo_id}/branch")
+def switch_repository_branch(
+    repo_id: int,
+    payload: RepoBranchPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    repo = db.query(LocalRepository).filter(LocalRepository.id == repo_id).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    try:
+        switch_result = git_service.switch_repository_branch(repo.local_path, payload.branch)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    repo.default_branch = switch_result.get("branch", payload.branch)
+    repo.last_synced_at = datetime.datetime.utcnow()
+    db.commit()
+
+    return {
+        "message": f"Repository '{repo.name}' switched to branch '{repo.default_branch}'.",
+        "current_branch": repo.default_branch,
+        "head_sha": switch_result.get("head_sha", ""),
+        "commit_count": switch_result.get("commit_count", 0),
+        "ingested_commits": switch_result.get("ingested_commits", 0)
+    }
+
+@router.post("/repositories/clone-stream")
+def clone_repository_stream(
+    payload: RepoCreatePayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    safe_name = git_service.sanitize_repo_name(payload.name)
+    existing = db.query(LocalRepository).filter(LocalRepository.name == safe_name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Repository '{safe_name}' is already registered in local storage catalog.")
+
+    def stream_generator():
+        try:
+            for event in git_service.clone_repository_with_progress(
+                name=safe_name,
+                remote_url=payload.remote_url,
+                clone_type=payload.clone_type,
+                default_branch=payload.default_branch
+            ):
+                if event.get("stage") == "completed" and "metadata" in event:
+                    meta = event["metadata"]
+                    with SessionLocal() as db_session:
+                        repo = LocalRepository(
+                            name=safe_name,
+                            remote_url=payload.remote_url,
+                            local_path=meta["local_path"],
+                            clone_type=payload.clone_type,
+                            default_branch=meta.get("branch", payload.default_branch),
+                            last_synced_at=datetime.datetime.utcnow()
+                        )
+                        db_session.add(repo)
+                        db_session.commit()
+                        db_session.refresh(repo)
+                        event["repo_id"] = repo.id
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            err_event = {"stage": "error", "percent": 0, "detail": str(e)}
+            yield f"data: {json.dumps(err_event)}\n\n"
+
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+

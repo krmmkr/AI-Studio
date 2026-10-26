@@ -9,6 +9,9 @@ import {
   Share2,
   Users,
   Lock,
+  Trash2,
+  AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 
 interface DashboardHomescreenProps {
@@ -24,6 +27,7 @@ interface DashboardHomescreenProps {
   activeDashboardId: string;
   onSelectDashboard: (id: string) => void;
   onCreateNewDashboard: () => void;
+  onDeleteDashboard?: (id: string) => Promise<void> | void;
   onToggleShare?: (dashboardId: string, isPublic: boolean) => void;
   workspaceScope?: 'my' | 'public';
   onSelectWorkspaceScope?: (scope: 'my' | 'public') => void;
@@ -35,10 +39,13 @@ export const DashboardHomescreen: React.FC<DashboardHomescreenProps> = ({
   activeDashboardId,
   onSelectDashboard,
   onCreateNewDashboard,
+  onDeleteDashboard,
   onToggleShare,
   workspaceScope = 'my',
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [dashboardToDelete, setDashboardToDelete] = useState<{ id: string; title: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Filter dashboards by search and workspace scope (My Workspace vs Public Workspace)
   const filteredDashboards = dashboards.filter((d) => {
@@ -154,6 +161,19 @@ export const DashboardHomescreen: React.FC<DashboardHomescreenProps> = ({
                             <Share2 className="w-3.5 h-3.5" />
                           </button>
                         )}
+
+                        {onDeleteDashboard && dash.is_owner && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDashboardToDelete(dash);
+                            }}
+                            className="p-1 rounded-full text-m3-on-surface-variant hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                            title="Delete dashboard"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -184,6 +204,64 @@ export const DashboardHomescreen: React.FC<DashboardHomescreenProps> = ({
           </div>
         )}
       </div>
+
+      {/* Delete Dashboard Confirmation Modal */}
+      {dashboardToDelete && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-m3-surface rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-m3-outline-variant/30 flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-red-500/15 text-red-500 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-m3-on-surface">Delete Dashboard?</h3>
+                <p className="text-xs text-m3-on-surface-variant mt-0.5">
+                  Are you sure you want to delete <span className="font-semibold text-m3-on-surface">"{dashboardToDelete.title}"</span>?
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-m3-on-surface-variant/80 bg-m3-surface-container-low p-2.5 rounded-xl border border-m3-outline-variant/20">
+              This will permanently delete this dashboard, its widgets, and configurations. This action cannot be undone.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDashboardToDelete(null)}
+                disabled={isDeleting}
+                className="px-3.5 py-1.5 rounded-full text-xs font-medium text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-container transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!onDeleteDashboard || isDeleting) return;
+                  try {
+                    setIsDeleting(true);
+                    await onDeleteDashboard(dashboardToDelete.id);
+                    setDashboardToDelete(null);
+                  } catch (e: any) {
+                    alert(e.message || 'Failed to delete dashboard');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                disabled={isDeleting}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-semibold bg-red-600 hover:bg-red-700 text-white shadow-xs transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5 text-white" />
+                )}
+                <span>{isDeleting ? 'Deleting...' : 'Delete Dashboard'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

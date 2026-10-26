@@ -5,7 +5,6 @@ import {
   Users,
   Database,
   ChevronDown,
-  ShieldCheck,
   Moon,
   Sun,
   Sliders,
@@ -175,21 +174,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               <ChevronDown className="w-3.5 h-3.5 text-m3-on-surface-variant" />
             </button>
 
-            {/* Material 3 Expressive Dropdown Menu */}
+            {/* Material 3 Expressive Dropdown Menu (Clean, No Subtext) */}
             {dropdownOpen && (
-              <div className="absolute right-0 mt-2 w-68 rounded-3xl bg-m3-surface p-2 shadow-xl border border-m3-outline-variant/30 flex flex-col gap-1 animate-fadeIn z-50">
+              <div className="absolute right-0 mt-2 w-56 rounded-2xl bg-m3-surface p-1.5 shadow-xl border border-m3-outline-variant/30 flex flex-col gap-0.5 animate-fadeIn z-50">
                 {/* User Header Details */}
-                <div className="px-3.5 py-3 rounded-2xl bg-m3-surface-container-low mb-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-bold text-m3-on-surface truncate">{user.email}</span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-m3-primary-container text-m3-on-primary-container uppercase">
-                      {user.role}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Authenticated Session</span>
-                  </div>
+                <div className="px-3 py-2 rounded-xl bg-m3-surface-container-low mb-1 flex items-center justify-between">
+                  <span className="text-xs font-semibold text-m3-on-surface truncate max-w-[140px]">{user.email}</span>
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-m3-primary-container text-m3-on-primary-container uppercase">
+                    {user.role}
+                  </span>
                 </div>
 
                 {/* Dropdown Action Items */}
@@ -198,13 +191,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                     setDropdownOpen(false);
                     onOpenAgentInstructions();
                   }}
-                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-2xl hover:bg-m3-surface-container-high transition-colors text-left"
+                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-xl hover:bg-m3-surface-container-high transition-colors text-left"
                 >
-                  <Sliders className="w-4 h-4 text-m3-primary" />
-                  <div className="flex flex-col">
-                    <span className="font-semibold">Agent Instructions</span>
-                    <span className="text-[10px] text-m3-on-surface-variant">Edit prompts & custom agents</span>
-                  </div>
+                  <Sliders className="w-4 h-4 text-m3-primary shrink-0" />
+                  <span>Agent Instructions</span>
                 </button>
 
                 <button
@@ -212,13 +202,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                     setDropdownOpen(false);
                     onOpenSettings();
                   }}
-                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-2xl hover:bg-m3-surface-container-high transition-colors text-left"
+                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-xl hover:bg-m3-surface-container-high transition-colors text-left"
                 >
-                  <Database className="w-4 h-4 text-m3-primary" />
-                  <div className="flex flex-col">
-                    <span className="font-semibold">Datasources Hub</span>
-                    <span className="text-[10px] text-m3-on-surface-variant">Live MCPs, DuckDB & Git clones</span>
-                  </div>
+                  <Database className="w-4 h-4 text-m3-primary shrink-0" />
+                  <span>Datasources Hub</span>
                 </button>
 
                 {onOpenRepoManager && (
@@ -227,13 +214,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                       setDropdownOpen(false);
                       onOpenRepoManager();
                     }}
-                    className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-2xl hover:bg-m3-surface-container-high transition-colors text-left"
+                    className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-xl hover:bg-m3-surface-container-high transition-colors text-left"
                   >
-                    <FolderGit2 className="w-4 h-4 text-emerald-500" />
-                    <div className="flex flex-col">
-                      <span className="font-semibold">Repositories & Clones</span>
-                      <span className="text-[10px] text-m3-on-surface-variant">Manage local repo storage & sync</span>
-                    </div>
+                    <FolderGit2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Repositories</span>
                   </button>
                 )}
 
@@ -242,13 +226,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                     setDropdownOpen(false);
                     onOpenDuckDBConsole();
                   }}
-                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-2xl hover:bg-m3-surface-container-high transition-colors text-left"
+                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-xl hover:bg-m3-surface-container-high transition-colors text-left"
                 >
-                  <Database className="w-4 h-4 text-amber-500" />
-                  <div className="flex flex-col">
-                    <span className="font-semibold">DuckDB Analytics</span>
-                    <span className="text-[10px] text-m3-on-surface-variant">In-process SQL query engine</span>
-                  </div>
+                  <Database className="w-4 h-4 text-amber-500 shrink-0" />
+                  <span>DuckDB Analytics</span>
                 </button>
 
                 <button
@@ -256,25 +237,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                     setDropdownOpen(false);
                     onOpenUserManagement();
                   }}
-                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-2xl hover:bg-m3-surface-container-high transition-colors text-left"
+                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-m3-on-surface rounded-xl hover:bg-m3-surface-container-high transition-colors text-left"
                 >
-                  <Users className="w-4 h-4 text-m3-tertiary" />
-                  <div className="flex flex-col">
-                    <span className="font-semibold">User Management</span>
-                    <span className="text-[10px] text-m3-on-surface-variant">Roles & OIDC accounts</span>
-                  </div>
+                  <Users className="w-4 h-4 text-m3-tertiary shrink-0" />
+                  <span>User Management</span>
                 </button>
 
-                <div className="h-px bg-m3-outline-variant/20 my-1 mx-2" />
+                <div className="h-px bg-m3-outline-variant/20 my-1 mx-1.5" />
 
                 <button
                   onClick={() => {
                     setDropdownOpen(false);
                     onLogout();
                   }}
-                  className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-m3-error rounded-2xl hover:bg-m3-error-container/40 transition-colors text-left"
+                  className="flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-m3-error rounded-xl hover:bg-m3-error-container/30 transition-colors text-left"
                 >
-                  <LogOut className="w-4 h-4" />
+                  <LogOut className="w-4 h-4 shrink-0" />
                   <span>Sign Out</span>
                 </button>
               </div>

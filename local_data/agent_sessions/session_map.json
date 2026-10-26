@@ -1,0 +1,97 @@
+{
+  "test-cli": {
+    "opencode": "ses_e8be11eb5ffe6u6nrU8iHbEjRU"
+  },
+  "chat-test-123": {
+    "opencode": "ses_test_val_99"
+  },
+  "chat-test-debug": {
+    "opencode": "ses_e8bd8672cffecbjv3aCW8ZWqHj"
+  },
+  "stale-session-test": {
+    "opencode": "ses_e8bd703aeffe4znhVVQNcRsHPv"
+  },
+  "fresh-session-test": {
+    "opencode": "ses_e8bd70193ffeopaA1zQU5jKqLM"
+  },
+  "e92332bf-b500-420a-8e73-207e875f3e30": {
+    "opencode": "ses_e8bd6447cffeCI2CRAfyjLevE6"
+  },
+  "ed25654b-aa21-4ef4-bc78-512643911259": {
+    "opencode": "ses_e8bb48911ffeE5a4ddPyRBW9Yq"
+  },
+  "test-agent-debug": {
+    "antigravity": "test-agent-debug-879256ff03ede4fb48e35e5ccecde5a7"
+  },
+  "7dfca1d8-2bda-4321-b2bf-03c7f85f06c8": {
+    "antigravity": "7dfca1d8-2bda-4321-b2bf-03c7f85f06c8"
+  },
+  "e004d813-d4b4-424e-9f50-a2b75fc6cc2a": {
+    "antigravity": "e004d813-d4b4-424e-9f50-a2b75fc6cc2a"
+  },
+  "391054bf-6a4f-4670-9dc7-72f07eca4075": {
+    "antigravity": "391054bf-6a4f-4670-9dc7-72f07eca4075"
+  },
+  "8cf0f5f1-ba2e-477f-85c1-4a5685ffa11c": {
+    "antigravity": "8cf0f5f1-ba2e-477f-85c1-4a5685ffa11c"
+  },
+  "5ab6cee6-ce8b-4669-9850-3437bc0b6730": {
+    "antigravity": "5ab6cee6-ce8b-4669-9850-3437bc0b6730"
+  },
+  "e4598c72-9e83-4cdf-9c23-abeea69b0ada": {
+    "antigravity": "e4598c72-9e83-4cdf-9c23-abeea69b0ada"
+  },
+  "test-session-1234567890123456789012": {
+    "antigravity": "test-session-1234567890123456789012"
+  },
+  "3696048d-6040-4672-a6d0-aa6c20383144": {
+    "antigravity": "3696048d-6040-4672-a6d0-aa6c20383144"
+  },
+  "pin-3f045f78-3aa5-44c5-b487-62846e43678b-1": {
+    "antigravity": "pin-3f045f78-3aa5-44c5-b487-62846e43678b-1"
+  },
+  "4f9b44ee-5f72-4fd1-a5ff-ef5b5c310637": {
+    "antigravity": "4f9b44ee-5f72-4fd1-a5ff-ef5b5c310637"
+  },
+  "pin-75180021-fed2-4cec-83d0-f76c794eafb0-1": {
+    "antigravity": "pin-75180021-fed2-4cec-83d0-f76c794eafb0-1"
+  },
+  "e4e87342-10a5-4b84-987d-89f18c56397b": {
+    "antigravity": "e4e87342-10a5-4b84-987d-89f18c56397b"
+  },
+  "pin-dash-pin-test-01-1": {
+    "antigravity": "pin-dash-pin-test-01-1-922501327586098b08bf5ff3b58e1294"
+  },
+  "8a3f674a-8427-4591-9f4f-4495100207a4": {
+    "antigravity": "8a3f674a-8427-4591-9f4f-4495100207a4"
+  },
+  "714d91a4-a57c-4a9e-b96b-21e45a1bc71c": {
+    "antigravity": "714d91a4-a57c-4a9e-b96b-21e45a1bc71c"
+  },
+  "98d3d362-ef1c-41e1-8543-4f255091ddf6": {
+    "antigravity": "98d3d362-ef1c-41e1-8543-4f255091ddf6"
+  },
+  "e3a3ccfc-f5b6-43ab-a7ba-0856d81df79f": {
+    "antigravity": "e3a3ccfc-f5b6-43ab-a7ba-0856d81df79f",
+    "opencode": "ses_e8adee193ffeiyL10GFJVJ2vR1"
+  },
+  "d65cef23-fbd8-48e3-b7fb-b52cb28de567": {
+    "opencode": "ses_e89f813adffeEMxn25sXFKblny",
+    "antigravity": "d65cef23-fbd8-48e3-b7fb-b52cb28de567"
+  },
+  "test-session-custom-endpoint": {
+    "antigravity": "test-session-custom-endpoint-43bc4782e63f902731b1a6248fb20173"
+  },
+  "ea7e5615-76fa-4f12-9318-fe69994d18c4": {
+    "antigravity": "ea7e5615-76fa-4f12-9318-fe69994d18c4"
+  },
+  "e9d9a468-09c5-4b4b-b818-f67932591c14": {
+    "antigravity": "e9d9a468-09c5-4b4b-b818-f67932591c14"
+  },
+  "b695733c-818c-46a3-bc4e-0c8ab9f6a5cb": {
+    "antigravity": "b695733c-818c-46a3-bc4e-0c8ab9f6a5cb"
+  },
+  "pin-ae3ed649-588b-497f-9ca1-34ff2ebe98dc-1": {
+    "antigravity": "pin-ae3ed649-588b-497f-9ca1-34ff2ebe98dc-1"
+  }
+}

@@ -72,6 +72,14 @@ export const App: React.FC = () => {
   const [activeDashboard, setActiveDashboard] = useState<Dashboard | null>(null);
   const [workspaceScope, setWorkspaceScope] = useState<'my' | 'public'>('my');
 
+  // Automatically dismiss canvas assistant drawer when navigating out of the dashboard canvas
+  useEffect(() => {
+    if (activeNavTab === 'chat' || currentView !== 'canvas' || !activeDashboard) {
+      setDashboardCopilotOpen(false);
+      setCopilotInitialPrompt(undefined);
+    }
+  }, [activeNavTab, currentView, activeDashboard?.id]);
+
   // Check auth state on mount
   useEffect(() => {
     authApi
@@ -153,6 +161,30 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleDeleteDashboard = async (dashboardId: string) => {
+    try {
+      await dashboardApi.delete(dashboardId);
+      const remaining = dashboardsList.filter((d) => d.id !== dashboardId);
+      setDashboardsList(remaining);
+
+      if (activeDashboard?.id === dashboardId) {
+        if (remaining.length > 0) {
+          const nextDash = await dashboardApi.get(remaining[0].id);
+          setActiveDashboard(nextDash);
+          localStorage.setItem('antigravity_active_dashboard_id', nextDash.id);
+        } else {
+          setActiveDashboard(null);
+          localStorage.removeItem('antigravity_active_dashboard_id');
+          setCurrentView('home');
+          localStorage.setItem('antigravity_view', 'home');
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to delete dashboard:', err);
+      alert(err.message || 'Failed to delete dashboard');
+    }
+  };
+
   const handleSelectTab = (tab: 'chat' | 'my' | 'public') => {
     setActiveNavTab(tab);
     localStorage.setItem('antigravity_nav_tab', tab);
@@ -219,11 +251,21 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleCanvasAction = async (action: { action: string; widget: DashboardWidget }) => {
-    if (!activeDashboard) return;
-    const newWidget = action.widget;
+  const handleNavigateToCanvas = () => {
+    setActiveNavTab('my');
+    setWorkspaceScope('my');
+    setCurrentView('canvas');
+    localStorage.setItem('antigravity_nav_tab', 'my');
+    localStorage.setItem('antigravity_view', 'canvas');
+  };
 
-    // Optimistically update canvas state
+  const handleCanvasAction = async (action: { action: string; widget: DashboardWidget }) => {
+    const targetDashboardId = activeDashboard?.id || (dashboardsList.length > 0 ? dashboardsList[0].id : null);
+    if (!targetDashboardId) return;
+    const newWidget = action.widget;
+    let finalPlacedWidget = newWidget;
+
+    // Optimistically update canvas state with deterministic placement
     setActiveDashboard((prev) => {
       if (!prev) return prev;
       const existingIdx = prev.widgets.findIndex((w) => w.id === newWidget.id);
@@ -232,19 +274,52 @@ export const App: React.FC = () => {
         updated[existingIdx] = newWidget;
         return { ...prev, widgets: updated };
       } else {
-        return { ...prev, widgets: [newWidget, ...prev.widgets] };
+        // Compute maxY so new widget is appended cleanly at the bottom
+        const maxY = prev.widgets.reduce((acc, w) => {
+          const y = w.grid?.y ?? 0;
+          const h = w.grid?.h ?? 4;
+          return Math.max(acc, y + h);
+        }, 0);
+        finalPlacedWidget = {
+          ...newWidget,
+          grid: {
+            x: 0,
+            y: (newWidget.grid?.y !== undefined && newWidget.grid.y > 0) ? newWidget.grid.y : maxY,
+            w: newWidget.grid?.w || 6,
+            h: newWidget.grid?.h || 4,
+          },
+        };
+        return { ...prev, widgets: [...prev.widgets, finalPlacedWidget] };
       }
     });
 
-    // Persist to database
+    if (!activeDashboard && targetDashboardId) {
+      dashboardApi.get(targetDashboardId).then(setActiveDashboard).catch(console.error);
+    }
+
+    // Synchronize dashboardsList so widget counts and thumbnails update without reload
+    const isNew = activeDashboard ? !activeDashboard.widgets.some((w) => w.id === newWidget.id) : true;
+    if (isNew) {
+      setDashboardsList((prev) =>
+        prev.map((d) => {
+          if (d.id !== targetDashboardId) return d;
+          return {
+            ...d,
+            widget_count: (d.widget_count || 0) + 1,
+          };
+        })
+      );
+    }
+
+    // Persist to database with exact placement grid
     try {
-      await dashboardApi.upsertWidget(activeDashboard.id, {
-        widget_id: newWidget.id,
-        title: newWidget.title,
-        widget_type: newWidget.widget_type,
-        grid: newWidget.grid,
-        spec: newWidget.spec,
-        datasource: newWidget.datasource,
+      await dashboardApi.upsertWidget(targetDashboardId, {
+        widget_id: finalPlacedWidget.id,
+        title: finalPlacedWidget.title,
+        widget_type: finalPlacedWidget.widget_type,
+        grid: finalPlacedWidget.grid,
+        spec: finalPlacedWidget.spec,
+        datasource: finalPlacedWidget.datasource,
       });
     } catch (e) {
       console.error('Failed to persist widget:', e);
@@ -319,6 +394,11 @@ export const App: React.FC = () => {
           <AgenticChat
             user={user}
             personas={personas}
+            activeDashboardId={activeDashboard?.id}
+            dashboards={dashboardsList}
+            onSelectDashboard={handleSelectDashboard}
+            onCanvasAction={handleCanvasAction}
+            onNavigateToCanvas={handleNavigateToCanvas}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenAgentInstructions={() => setAgentInstructionsOpen(true)}
           />
@@ -329,6 +409,7 @@ export const App: React.FC = () => {
             activeDashboardId={activeDashboard?.id || ''}
             onSelectDashboard={handleSelectDashboard}
             onCreateNewDashboard={() => setCreateDashboardOpen(true)}
+            onDeleteDashboard={handleDeleteDashboard}
             onToggleShare={handleToggleShare}
             workspaceScope={workspaceScope}
           />
@@ -339,6 +420,7 @@ export const App: React.FC = () => {
             activeDashboardId={activeDashboard?.id || ''}
             onSelectDashboard={handleSelectDashboard}
             onCreateDashboard={() => setCreateDashboardOpen(true)}
+            onDeleteDashboard={handleDeleteDashboard}
             onToggleShare={handleToggleShare}
             repositories={repositories}
             selectedRepo={selectedRepo}
@@ -358,13 +440,15 @@ export const App: React.FC = () => {
             onLayoutSaved={(updatedWidgets) => {
               if (!activeDashboard) return;
               setActiveDashboard({ ...activeDashboard, widgets: updatedWidgets });
-              const layoutMap: Record<string, { x: number; y: number; w: number; h: number }> = {};
+              const layoutMap: Record<string, { x: number; y: number; w: number; h: number; pixel_height?: number; zone_id?: string | null }> = {};
               updatedWidgets.forEach((w) => {
                 layoutMap[w.id] = {
                   x: w.grid?.x || 0,
                   y: w.grid?.y || 0,
                   w: w.grid?.w || 6,
                   h: w.grid?.h || 4,
+                  pixel_height: w.grid?.pixel_height,
+                  zone_id: w.grid?.zone_id,
                 };
               });
               dashboardApi.updateLayout(activeDashboard.id, layoutMap).catch(console.error);
@@ -372,19 +456,21 @@ export const App: React.FC = () => {
           />
         )}
 
-        {/* Dashboard-Level Studio Assistant Drawer (With local agent selection) */}
-        <DashboardCopilotDrawer
-          isOpen={dashboardCopilotOpen}
-          onClose={() => {
-            setDashboardCopilotOpen(false);
-            setCopilotInitialPrompt(undefined);
-          }}
-          dashboardTitle={activeDashboard?.title || 'Dashboard'}
-          dashboardId={activeDashboard?.id}
-          personas={personas}
-          initialPrompt={copilotInitialPrompt}
-          onCanvasAction={handleCanvasAction}
-        />
+        {/* Dashboard-Level Studio Assistant Drawer (Strictly scoped to active dashboard canvas) */}
+        {activeNavTab !== 'chat' && currentView === 'canvas' && activeDashboard && (
+          <DashboardCopilotDrawer
+            isOpen={dashboardCopilotOpen}
+            onClose={() => {
+              setDashboardCopilotOpen(false);
+              setCopilotInitialPrompt(undefined);
+            }}
+            dashboardTitle={activeDashboard.title}
+            dashboardId={activeDashboard.id}
+            personas={personas}
+            initialPrompt={copilotInitialPrompt}
+            onCanvasAction={handleCanvasAction}
+          />
+        )}
       </div>
 
       {/* Modals */}
@@ -414,6 +500,7 @@ export const App: React.FC = () => {
         isOpen={createDashboardOpen}
         onClose={() => setCreateDashboardOpen(false)}
         onDashboardCreated={(newId) => loadDashboards(newId)}
+        repositories={repositories}
       />
 
       <UserManagementModal
