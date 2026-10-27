@@ -63,7 +63,7 @@ async def check_mcp_streamable_valid(
                     "params": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": {"name": "Antigravity Cockpit", "version": "1.0"},
+                        "clientInfo": {"name": "AI Studio", "version": "1.0"},
                     },
                 },
                 headers=req_headers,
@@ -364,6 +364,7 @@ async def stream_with_antigravity_sdk(
                 )
 
             last_step_error = None
+            has_gated_pause = False
             try:
                 async with Agent(config) as agent:
                     chat_resp = await agent.chat(user_message)
@@ -392,6 +393,27 @@ async def stream_with_antigravity_sdk(
                                     yield action_ev
                                 while emitted_proposals:
                                     yield emitted_proposals.pop(0)
+                                    has_gated_pause = True
+
+                                res_dict = chunk.result if isinstance(chunk.result, dict) else {}
+                                res_status = str(res_dict.get("status", "")).lower()
+                                if res_status in (
+                                    "approval_requested",
+                                    "proposal_created",
+                                    "question_asked",
+                                    "awaiting_user_approval",
+                                ):
+                                    has_gated_pause = True
+
+                                if has_gated_pause:
+                                    # Antigravity Human-in-the-Loop Gating:
+                                    # Halt the turn immediately so the model does not generate trailing
+                                    # speculative chatter or duplicate questions.
+                                    try:
+                                        chat_resp.cancel()
+                                    except Exception:
+                                        pass
+                                    break
                             elif isinstance(chunk, Text):
                                 if chunk.text:
                                     collected_text.append(chunk.text)
@@ -423,8 +445,8 @@ async def stream_with_antigravity_sdk(
                 logger.warning(f"Failed to execute agent ({model_name}): {init_err}")
                 last_step_error = str(init_err)
 
-            # If we got output, widgets, or proposals, or were cancelled by user, stop trying fallbacks
-            if collected_text or emitted_widget_ids or emitted_proposals or (execution_ctx and execution_ctx.is_cancelled):
+            # If we got output, widgets, proposals, or paused for approval, stop trying fallbacks
+            if collected_text or emitted_widget_ids or emitted_proposals or has_gated_pause or (execution_ctx and execution_ctx.is_cancelled):
                 break
 
             # If no output and transient/model error occurred, try next fallback model

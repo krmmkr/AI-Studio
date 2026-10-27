@@ -311,20 +311,81 @@ def refresh_widget(dashboard_id: str, widget_id: str, current_user: User = Depen
 
     datasource = json.loads(widget.datasource_json) if widget.datasource_json else {}
     spec = json.loads(widget.spec_json) if widget.spec_json else {}
-    
-    # Execute real analytics query against DuckDB / Superset dataset
-    query_to_run = datasource.get("query") or datasource.get("sql")
-    ds_type = (datasource.get("type") or "").lower()
 
-    if not query_to_run:
-        if "pr-velocity" in widget.widget_id or "velocity" in widget.widget_id or "github" in ds_type:
-            query_to_run = "SELECT repo, count(*) as count, round(avg(lines_added), 1) as avg_diff FROM github_commits GROUP BY 1 ORDER BY 1"
-        elif "commit" in widget.widget_id or "churn" in widget.widget_id:
-            query_to_run = "SELECT author, sum(lines_added) as added, sum(lines_deleted) as deleted FROM github_commits GROUP BY 1 ORDER BY 1"
-        elif "superset" in ds_type or "bi" in widget.widget_id or "latency" in widget.widget_id:
-            query_to_run = "SELECT database_name, latency_ms, cache_hit_pct FROM superset_query_performance ORDER BY latency_ms DESC"
-        elif "correlation" in widget.widget_id or "impact" in widget.widget_id:
-            query_to_run = "SELECT metric_date, lines_added, p95_latency_ms FROM engineering_impact_daily ORDER BY metric_date ASC"
+    # Handle react_app widgets safely: update underlying dataset without destroying component code
+    if widget.widget_type == "react_app" or spec.get("type") == "react_app":
+        query_to_run = datasource.get("query") or datasource.get("sql")
+        
+        # 1. Check if an agent recipe is attached to this widget or its dataset
+        recipe = datasource.get("refresh_recipe") or spec.get("refresh_recipe")
+        if not recipe and query_to_run:
+            m = re.search(r"FROM\s+([a-zA-Z0-9_]+)", query_to_run, re.IGNORECASE)
+            if m:
+                source_tbl = m.group(1).lower()
+                recipe = duckdb_service.get_dataset_recipe(source_tbl)
+
+        if recipe:
+            from backend.app.services.recipe_engine import recipe_engine
+            rec_res = recipe_engine.execute_recipe(recipe)
+            if rec_res.get("success") and rec_res.get("data"):
+                if query_to_run:
+                    q_res = duckdb_service.execute_widget_query(query_to_run, filter_scope=spec.get("filter_scope", "global"))
+                    if q_res.get("data"):
+                        spec["data"] = q_res.get("data", [])
+                        spec["rows"] = q_res.get("data", [])
+                        spec["columns"] = q_res.get("columns", [])
+                    else:
+                        spec["data"] = rec_res["data"]
+                        spec["rows"] = rec_res["data"]
+                        spec["columns"] = rec_res.get("columns", [])
+                else:
+                    spec["data"] = rec_res["data"]
+                    spec["rows"] = rec_res["data"]
+                    spec["columns"] = rec_res.get("columns", [])
+        elif query_to_run:
+            try:
+                filter_scope = spec.get("filter_scope", "global")
+                q_res = duckdb_service.execute_widget_query(query_to_run, filter_scope=filter_scope)
+                data_rows = q_res.get("data", [])
+                cols = q_res.get("columns", [])
+                spec["data"] = data_rows
+                spec["rows"] = data_rows
+                spec["columns"] = cols
+                datasource["query"] = query_to_run
+            except Exception as e:
+                logger.warning(f"Error querying DuckDB for react_app widget '{widget_id}': {e}")
+        widget.updated_at = datetime.datetime.utcnow()
+        widget.spec_json = json.dumps(spec)
+        widget.datasource_json = json.dumps(datasource) if datasource else None
+        db.commit()
+        return {
+            "success": True,
+            "id": widget.widget_id,
+            "title": widget.title,
+            "widget_type": widget.widget_type,
+            "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+            "spec": spec,
+            "datasource": datasource,
+            "updated_at": widget.updated_at.isoformat()
+        }
+
+    # Handle filter widgets safely
+    if widget.widget_type in ("filter", "filter_controller") or spec.get("type") in ("filter", "single_filter"):
+        widget.updated_at = datetime.datetime.utcnow()
+        db.commit()
+        return {
+            "success": True,
+            "id": widget.widget_id,
+            "title": widget.title,
+            "widget_type": widget.widget_type,
+            "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+            "spec": spec,
+            "datasource": datasource,
+            "updated_at": widget.updated_at.isoformat()
+        }
+
+    # Execute real analytics query against DuckDB dataset for standard charts if defined
+    query_to_run = datasource.get("query") or datasource.get("sql") or spec.get("sql") or spec.get("query")
 
     if query_to_run:
         try:
@@ -435,17 +496,75 @@ def refresh_dashboard(
         datasource = json.loads(widget.datasource_json) if widget.datasource_json else {}
         spec = json.loads(widget.spec_json) if widget.spec_json else {}
         query_to_run = datasource.get("query") or datasource.get("sql")
-        ds_type = (datasource.get("type") or "").lower()
 
-        if not query_to_run:
-            if "pr-velocity" in widget.widget_id or "velocity" in widget.widget_id or "github" in ds_type:
-                query_to_run = "SELECT repo, count(*) as count, round(avg(lines_added), 1) as avg_diff FROM github_commits GROUP BY 1 ORDER BY 1"
-            elif "commit" in widget.widget_id or "churn" in widget.widget_id:
-                query_to_run = "SELECT author, sum(lines_added) as added, sum(lines_deleted) as deleted FROM github_commits GROUP BY 1 ORDER BY 1"
-            elif "superset" in ds_type or "bi" in widget.widget_id or "latency" in widget.widget_id:
-                query_to_run = "SELECT database_name, latency_ms, cache_hit_pct FROM superset_query_performance ORDER BY latency_ms DESC"
-            elif "correlation" in widget.widget_id or "impact" in widget.widget_id:
-                query_to_run = "SELECT metric_date, lines_added, p95_latency_ms FROM engineering_impact_daily ORDER BY metric_date ASC"
+        # Safely preserve react_app widgets: refresh their data rows without destroying custom component code
+        if widget.widget_type == "react_app" or spec.get("type") == "react_app":
+            # Check for declarative generation recipe
+            recipe = datasource.get("refresh_recipe") or spec.get("refresh_recipe")
+            if not recipe and query_to_run:
+                m = re.search(r"FROM\s+([a-zA-Z0-9_]+)", query_to_run, re.IGNORECASE)
+                if m:
+                    source_tbl = m.group(1).lower()
+                    recipe = duckdb_service.get_dataset_recipe(source_tbl)
+
+            if recipe:
+                from backend.app.services.recipe_engine import recipe_engine
+                rec_res = recipe_engine.execute_recipe(recipe)
+                if rec_res.get("success") and rec_res.get("data"):
+                    if query_to_run:
+                        q_res = duckdb_service.execute_widget_query(query_to_run, filter_scope=spec.get("filter_scope", "global"))
+                        if q_res.get("data"):
+                            spec["data"] = q_res.get("data", [])
+                            spec["rows"] = q_res.get("data", [])
+                            spec["columns"] = q_res.get("columns", [])
+                        else:
+                            spec["data"] = rec_res["data"]
+                            spec["rows"] = rec_res["data"]
+                            spec["columns"] = rec_res.get("columns", [])
+                    else:
+                        spec["data"] = rec_res["data"]
+                        spec["rows"] = rec_res["data"]
+                        spec["columns"] = rec_res.get("columns", [])
+            elif query_to_run:
+                try:
+                    filter_scope = spec.get("filter_scope", "global")
+                    q_res = duckdb_service.execute_widget_query(query_to_run, filter_scope=filter_scope)
+                    data_rows = q_res.get("data", [])
+                    cols = q_res.get("columns", [])
+                    spec["data"] = data_rows
+                    spec["rows"] = data_rows
+                    spec["columns"] = cols
+                    datasource["query"] = query_to_run
+                except Exception as e:
+                    logger.warning(f"Error querying DuckDB for react_app widget '{widget.widget_id}': {e}")
+            widget.updated_at = datetime.datetime.utcnow()
+            widget.spec_json = json.dumps(spec)
+            widget.datasource_json = json.dumps(datasource) if datasource else None
+            refreshed_widgets.append({
+                "id": widget.widget_id,
+                "title": widget.title,
+                "widget_type": widget.widget_type,
+                "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+                "spec": spec,
+                "datasource": datasource,
+                "updated_at": widget.updated_at.isoformat()
+            })
+            continue
+
+        # Safely preserve filter controllers
+        if widget.widget_type in ("filter", "filter_controller") or spec.get("type") in ("filter", "single_filter"):
+            refreshed_widgets.append({
+                "id": widget.widget_id,
+                "title": widget.title,
+                "widget_type": widget.widget_type,
+                "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+                "spec": spec,
+                "datasource": datasource,
+                "updated_at": widget.updated_at.isoformat() if widget.updated_at else datetime.datetime.utcnow().isoformat()
+            })
+            continue
+
+        query_to_run = datasource.get("query") or datasource.get("sql") or spec.get("sql") or spec.get("query")
 
         if query_to_run:
             try:
@@ -551,18 +670,6 @@ def evaluate_dashboard(
             continue
 
         query_to_run = datasource.get("query") or datasource.get("sql") or spec.get("sql") or spec.get("query_spec", {}).get("sql")
-        ds_type = (datasource.get("type") or "").lower()
-
-        if not query_to_run:
-            if "pr-velocity" in widget.widget_id or "velocity" in widget.widget_id or "github" in ds_type:
-                query_to_run = "SELECT repo, count(*) as count, round(avg(lines_added), 1) as avg_diff FROM github_commits GROUP BY 1 ORDER BY 1"
-            elif "commit" in widget.widget_id or "churn" in widget.widget_id:
-                query_to_run = "SELECT author, sum(lines_added) as added, sum(lines_deleted) as deleted FROM github_commits GROUP BY 1 ORDER BY 1"
-            elif "superset" in ds_type or "bi" in widget.widget_id or "latency" in widget.widget_id:
-                query_to_run = "SELECT database_name, latency_ms, cache_hit_pct FROM superset_query_performance ORDER BY latency_ms DESC"
-            elif "correlation" in widget.widget_id or "impact" in widget.widget_id:
-                query_to_run = "SELECT metric_date, lines_added, p95_latency_ms FROM engineering_impact_daily ORDER BY metric_date ASC"
-
         new_spec = spec
         if query_to_run:
             try:

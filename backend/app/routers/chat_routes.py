@@ -97,33 +97,49 @@ def get_runtime_info(current_user: User = Depends(get_current_user)):
         OPENCODE_MODEL,
         ANTIGRAVITY_MODEL,
         ANTIGRAVITY_BASE_URL,
+        find_opencode_binary,
     )
 
+    has_opencode = bool(find_opencode_binary())
     active_provider = (os.environ.get("LLM_PROVIDER") or LLM_PROVIDER or "antigravity").strip().lower()
-    if active_provider not in ("opencode", "antigravity"):
+    if active_provider == "opencode" and not has_opencode:
+        active_provider = "antigravity"
+    elif active_provider not in ("opencode", "antigravity"):
         active_provider = "antigravity"
 
     agy_model = os.environ.get("ANTIGRAVITY_MODEL") or ANTIGRAVITY_MODEL or "gemini-3.5-flash"
     agy_base_url = (os.environ.get("ANTIGRAVITY_BASE_URL") or ANTIGRAVITY_BASE_URL or "").strip()
+
+    providers = [
+        {
+            "id": "antigravity",
+            "label": "Antigravity SDK",
+            "model": agy_model,
+            "base_url": agy_base_url or None,
+            "available": True,
+        }
+    ]
+    if has_opencode:
+        providers.insert(0, {
+            "id": "opencode",
+            "label": "OpenCode SDK",
+            "model": os.environ.get("OPENCODE_MODEL") or OPENCODE_MODEL or "opencode/big-pickle",
+            "available": True,
+        })
+    else:
+        providers.append({
+            "id": "opencode",
+            "label": "OpenCode SDK (Not Installed)",
+            "model": os.environ.get("OPENCODE_MODEL") or OPENCODE_MODEL or "opencode/big-pickle",
+            "available": False,
+        })
 
     return {
         "default_provider": active_provider,
         "opencode_model": os.environ.get("OPENCODE_MODEL") or OPENCODE_MODEL or "opencode/big-pickle",
         "antigravity_model": agy_model,
         "antigravity_base_url": agy_base_url,
-        "providers": [
-            {
-                "id": "opencode",
-                "label": "OpenCode SDK",
-                "model": os.environ.get("OPENCODE_MODEL") or OPENCODE_MODEL or "opencode/big-pickle",
-            },
-            {
-                "id": "antigravity",
-                "label": "Antigravity SDK",
-                "model": agy_model,
-                "base_url": agy_base_url or None,
-            },
-        ],
+        "providers": providers,
     }
 
 @router.get("/sessions")

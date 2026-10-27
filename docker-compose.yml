@@ -14,13 +14,19 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       # By default, uses local SQLite database mounted in ./local_data
+      # Note: Absolute paths in SQLite connection strings require 4 slashes: sqlite:////app/...
       # To switch to Postgres, uncomment the line below and the postgres service below:
       # - DATABASE_URL=postgresql+psycopg2://cockpit_admin:cockpit_secure_password@postgres:5432/cockpit_prod
-      - DATABASE_URL=sqlite:///app/local_data/cockpit.db
-      - JWT_SECRET=production-antigravity-secret-key-change-in-production-deployments
-      - CORS_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
-      - LLM_PROVIDER=antigravity
+      - DATABASE_URL=sqlite:////app/local_data/cockpit.db
+      - JWT_SECRET=${JWT_SECRET:-production-antigravity-secret-key-change-in-production-deployments}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      - LLM_PROVIDER=${LLM_PROVIDER:-antigravity}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTIGRAVITY_API_KEY=${ANTIGRAVITY_API_KEY:-}
+      - ANTIGRAVITY_BASE_URL=${ANTIGRAVITY_BASE_URL:-}
+      - ANTIGRAVITY_MODEL=${ANTIGRAVITY_MODEL:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_HOST=${GITHUB_HOST:-}
     volumes:
       - ./local_data:/app/local_data
     # depends_on:
@@ -39,7 +45,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cockpit_admin -d cockpit_prod"]
       interval: 10s

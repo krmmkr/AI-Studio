@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Any
 import httpx
 
-from backend.app.config import OPENCODE_MODEL, REPOS_DIR
+from backend.app.config import OPENCODE_MODEL, REPOS_DIR, find_opencode_binary
 from backend.app.services.agents.execution_manager import ExecutionContext
 from backend.app.services.agents.session_store import session_store, sanitize_secret_text
 from backend.app.services.agents.tools import (
@@ -43,10 +43,12 @@ class OpenCodeV2Server:
 
             await self.close()
 
-            bin_path = "/home/kohul/ai/.venv/bin/opencode"
-            if not os.path.exists(bin_path):
-                import shutil
-                bin_path = shutil.which("opencode") or "opencode"
+            bin_path = find_opencode_binary()
+            if not bin_path:
+                raise FileNotFoundError(
+                    "OpenCode executable was not found on this system. "
+                    "Please install OpenCode or use Antigravity SDK (`LLM_PROVIDER=antigravity`)."
+                )
 
             home_dir = os.environ.get("HOME", "/tmp")
             if not os.path.isdir(home_dir) or not os.access(home_dir, os.W_OK):
@@ -519,6 +521,12 @@ async def stream_with_opencode_sdk(
 
                 while emitted_proposals:
                     yield emitted_proposals.pop(0)
+
+                res_dict = res if isinstance(res, dict) else {}
+                res_status = str(res_dict.get("status", "")).lower()
+                if res_status in ("approval_requested", "proposal_created", "question_asked", "awaiting_user_approval"):
+                    needs_followup = False
+                    break
 
                 if t_name in (
                     "list_repositories_and_datasets",

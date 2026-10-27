@@ -112,15 +112,85 @@ class GitService:
 
         return direct
 
+    @staticmethod
+    def _extract_target_host(args: list[str], cwd: Path | None = None) -> str | None:
+        """Extracts the git remote hostname from arguments or repo directory config."""
+        from urllib.parse import urlparse
+        import re
+
+        for arg in args:
+            if arg.startswith("http://") or arg.startswith("https://"):
+                return urlparse(arg).hostname
+            ssh_m = re.match(r"^git@([^:]+):", arg)
+            if ssh_m:
+                return ssh_m.group(1).lower()
+
+        if cwd:
+            cfg_file = Path(cwd) / ".git" / "config"
+            if not cfg_file.is_file() and (Path(cwd) / "config").is_file():
+                cfg_file = Path(cwd) / "config"
+            if cfg_file.is_file():
+                try:
+                    cfg_txt = cfg_file.read_text(encoding="utf-8", errors="ignore")
+                    m = re.search(r'url\s*=\s*(https?://[^\s]+|git@[^:\s]+:[^\s]+)', cfg_txt)
+                    if m:
+                        u = m.group(1)
+                        if u.startswith("http"):
+                            return urlparse(u).hostname
+                        ssh_m = re.match(r"^git@([^:]+):", u)
+                        if ssh_m:
+                            return ssh_m.group(1).lower()
+                except Exception:
+                    pass
+
+        return None
+
+    @classmethod
+    def _get_auth_extra_args(cls, args: list[str] | None = None, cwd: Path | None = None) -> list[str]:
+        """
+        Provides Git CLI auth configuration flags if GITHUB_TOKEN or GITHUB_PAT is set in environment.
+        Supports github.com, GitHub Enterprise Cloud (ghe.com, *.ghe.com), and custom GITHUB_HOST domains.
+        """
+        token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT") or "").strip()
+        if not token:
+            return []
+
+        import base64
+        auth_b64 = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        header_val = f"AUTHORIZATION: basic {auth_b64}"
+
+        hosts_to_auth = {"github.com", "api.github.com", "ghe.com"}
+
+        # Custom Enterprise host from environment (e.g., GITHUB_HOST=internal.ghe.com or git.corp.com)
+        env_host = os.environ.get("GITHUB_HOST") or os.environ.get("GITHUB_ENTERPRISE_HOST")
+        if env_host:
+            clean_env_host = env_host.strip().lower().replace("https://", "").replace("http://", "").split("/")[0]
+            if clean_env_host:
+                hosts_to_auth.add(clean_env_host)
+
+        # Dynamically detected target host from command args or repo config (e.g. *.ghe.com)
+        detected_host = cls._extract_target_host(args or [], cwd=cwd)
+        if detected_host:
+            detected_lower = detected_host.lower()
+            if "github" in detected_lower or detected_lower.endswith(".ghe.com") or env_host:
+                hosts_to_auth.add(detected_lower)
+
+        extra_args: list[str] = []
+        for h in sorted(hosts_to_auth):
+            extra_args.extend(["-c", f"http.https://{h}/.extraheader={header_val}"])
+
+        return extra_args
+
     def _run_git(self, args: list[str], cwd: Path | None = None, timeout: int = 120) -> tuple[int, str, str]:
         """Executes a git command non-interactively with safe terminal environment."""
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 
+        cmd = ["git"] + self._get_auth_extra_args(args=args, cwd=cwd) + args
         try:
             res = subprocess.run(
-                ["git"] + args,
+                cmd,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
@@ -213,10 +283,12 @@ class GitService:
         local_path: str,
         default_branch: str = "main",
         remote_url: str | None = None,
+        target_branch: str | None = None,
     ) -> dict[str, Any]:
         """
         Fetches and pulls incremental commits for an existing repository clone.
         If the directory is missing but remote_url is provided, automatically triggers a fresh clone.
+        If target_branch is provided, switches to and updates that branch.
         """
         target_dir = self.resolve_repo_dir(local_path)
 
@@ -224,7 +296,7 @@ class GitService:
             if remote_url:
                 repo_name = self.sanitize_repo_name(target_dir.name or "repo")
                 logger.info(f"Path '{local_path}' missing git repository. Triggering fresh clone from {remote_url}...")
-                return self.clone_repository(repo_name, remote_url, "full", default_branch)
+                return self.clone_repository(repo_name, remote_url, "full", target_branch or default_branch)
             raise ValueError(f"Repository directory '{local_path}' does not exist or has no .git metadata.")
 
         safe_name = self.sanitize_repo_name(target_dir.name)
@@ -235,17 +307,157 @@ class GitService:
         if rc != 0:
             logger.warning(f"Git fetch returned code {rc}: {err}")
 
-        # 2. Get current branch
-        _, current_branch, _ = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=target_dir)
-        branch = current_branch if current_branch and current_branch != "HEAD" else (default_branch or "main")
+        # 2. Determine which branch to sync
+        branch_to_sync = (target_branch or "").strip()
+        if not branch_to_sync:
+            _, current_branch, _ = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=target_dir)
+            branch_to_sync = current_branch.strip() if current_branch and current_branch.strip() != "HEAD" else (default_branch or "main")
 
         # 3. Pull / fast-forward merge if working tree
         if not is_bare:
-            self._run_git(["merge", "--ff-only", f"origin/{branch}"], cwd=target_dir)
+            if target_branch and target_branch.strip():
+                # Checkout branch (try local branch, then tracking remote branch)
+                rc_co, _, _ = self._run_git(["checkout", branch_to_sync], cwd=target_dir)
+                if rc_co != 0:
+                    rc_co, _, _ = self._run_git(
+                        ["checkout", "-b", branch_to_sync, "--track", f"origin/{branch_to_sync}"],
+                        cwd=target_dir,
+                    )
+                    if rc_co != 0:
+                        self._run_git(["checkout", "-B", branch_to_sync, f"origin/{branch_to_sync}"], cwd=target_dir)
+
+            self._run_git(["merge", "--ff-only", f"origin/{branch_to_sync}"], cwd=target_dir)
 
         meta = self.extract_repo_metadata(target_dir, safe_name)
         meta["local_path"] = str(target_dir)
+        meta["branch"] = branch_to_sync
         return meta
+
+    def list_branches(self, local_path: str) -> dict[str, Any]:
+        """
+        Lists all local and remote branches available in the repository clone.
+        """
+        target_dir = self.resolve_repo_dir(local_path)
+        if not self.is_repo_cloned(str(target_dir)):
+            raise ValueError(f"Repository directory '{local_path}' does not exist.")
+
+        # Ensure latest remote branches are known
+        self._run_git(["fetch", "--all", "--prune"], cwd=target_dir)
+
+        # Get current branch
+        _, current_branch, _ = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=target_dir)
+        current = current_branch.strip() if current_branch else "main"
+
+        # List local branches
+        _, local_out, _ = self._run_git(["branch", "--format=%(refname:short)"], cwd=target_dir)
+        local_branches = [b.strip() for b in local_out.splitlines() if b.strip()]
+
+        # List remote branches
+        _, remote_out, _ = self._run_git(["branch", "-r", "--format=%(refname:short)"], cwd=target_dir)
+        remote_branches: list[str] = []
+        for b in remote_out.splitlines():
+            b = b.strip()
+            if not b or "->" in b:
+                continue
+            clean_b = b[7:] if b.startswith("origin/") else b
+            if clean_b not in remote_branches:
+                remote_branches.append(clean_b)
+
+        # Unified deduplicated branch list with current at top
+        all_branches = list(dict.fromkeys([current] + local_branches + remote_branches))
+
+        return {
+            "current": current,
+            "local_branches": local_branches,
+            "remote_branches": remote_branches,
+            "branches": all_branches,
+        }
+
+    def create_worktree(
+        self,
+        local_path_or_repo: str,
+        new_branch: str,
+        base_branch: str = "main",
+    ) -> dict[str, Any]:
+        """
+        Creates an isolated Git worktree for safely authoring code changes, running tests,
+        and creating Pull Requests without touching or dirtying the primary repository directory.
+        Shares the identical underlying repository .git object database.
+        """
+        target_dir = self.resolve_repo_dir(local_path_or_repo)
+        if not self.is_repo_cloned(str(target_dir)):
+            raise ValueError(f"Base repository '{local_path_or_repo}' is not cloned.")
+
+        self._run_git(["fetch", "--all", "--prune"], cwd=target_dir)
+
+        from backend.app.config import LOCAL_DATA_DIR
+        safe_name = self.sanitize_repo_name(target_dir.name)
+        safe_branch_dir = re.sub(r"[^a-zA-Z0-9_\-]", "_", new_branch.strip())
+        worktrees_root = LOCAL_DATA_DIR / "worktrees" / safe_name
+        worktrees_root.mkdir(parents=True, exist_ok=True)
+        worktree_path = worktrees_root / safe_branch_dir
+
+        if worktree_path.exists():
+            self._run_git(["worktree", "remove", "--force", str(worktree_path)], cwd=target_dir)
+            if worktree_path.exists():
+                shutil.rmtree(worktree_path, ignore_errors=True)
+
+        # Determine start point: check origin/base, local base, origin/main, or HEAD
+        start_point = "HEAD"
+        for candidate in (f"origin/{base_branch}", base_branch, "origin/main", "origin/master", "main", "master"):
+            rc_chk, _, _ = self._run_git(["rev-parse", "--verify", candidate], cwd=target_dir)
+            if rc_chk == 0:
+                start_point = candidate
+                break
+
+        cmd = ["worktree", "add", str(worktree_path), "-b", new_branch, start_point]
+        rc, _, err = self._run_git(cmd, cwd=target_dir)
+        if rc != 0:
+            # Branch might already exist: checkout existing branch
+            rc, _, err = self._run_git(["worktree", "add", str(worktree_path), new_branch], cwd=target_dir)
+            if rc != 0:
+                raise ValueError(f"Failed to create git worktree: {err}")
+
+        return {
+            "repo": safe_name,
+            "branch": new_branch,
+            "base_branch": base_branch,
+            "worktree_path": str(worktree_path),
+        }
+
+    def list_worktrees(self, local_path_or_repo: str) -> list[dict[str, Any]]:
+        """Lists active worktrees attached to a repository."""
+        target_dir = self.resolve_repo_dir(local_path_or_repo)
+        rc, out, _ = self._run_git(["worktree", "list", "--porcelain"], cwd=target_dir)
+        if rc != 0:
+            return []
+        worktrees = []
+        current_wt: dict[str, Any] = {}
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                if current_wt:
+                    worktrees.append(current_wt)
+                    current_wt = {}
+                continue
+            if line.startswith("worktree "):
+                current_wt["path"] = line[9:]
+            elif line.startswith("branch "):
+                current_wt["branch"] = line[7:].replace("refs/heads/", "")
+            elif line.startswith("HEAD "):
+                current_wt["head"] = line[5:]
+        if current_wt:
+            worktrees.append(current_wt)
+        return worktrees
+
+    def remove_worktree(self, local_path_or_repo: str, worktree_path: str) -> bool:
+        """Removes an isolated worktree and prunes worktree metadata."""
+        target_dir = self.resolve_repo_dir(local_path_or_repo)
+        rc, _, _ = self._run_git(["worktree", "remove", "--force", worktree_path], cwd=target_dir)
+        self._run_git(["worktree", "prune"], cwd=target_dir)
+        if Path(worktree_path).exists():
+            shutil.rmtree(worktree_path, ignore_errors=True)
+        return rc == 0
 
     def extract_repo_metadata(self, target_dir: Path, safe_name: str, limit: int = 500) -> dict[str, Any]:
         """Extracts HEAD commit, branch, total commit count, and ingests rich commit & contributor telemetry into DuckDB."""
@@ -438,7 +650,8 @@ class GitService:
         branch_arg = default_branch.strip() if default_branch and default_branch.strip().lower() not in ("auto", "main", "") else ""
 
         def run_streaming_clone(url: str, branch: str):
-            args = ["git", "clone", "--progress"]
+            auth_args = self._get_auth_extra_args(args=[url], cwd=target_dir)
+            args = ["git"] + auth_args + ["clone", "--progress"]
             if clone_type == "shallow":
                 args += ["--depth", "500"]
             if branch:

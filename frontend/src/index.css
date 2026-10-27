@@ -119,3 +119,81 @@ textarea::placeholder {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-outline);
 }
+
+/* =========================================================================
+   Scoped Dark Mode Harmonization for Dynamic React Widgets (.react-app-sandbox)
+   Automatically translates common light-theme utilities to dark surfaces
+   ========================================================================= */
+.react-app-sandbox {
+  color-scheme: light;
+}
+
+.dark .react-app-sandbox {
+  color-scheme: dark;
+  color: var(--color-on-surface);
+}
+
+.dark .react-app-sandbox .bg-white {
+  background-color: var(--color-surface-container-low, #1F1D24) !important;
+}
+
+.dark .react-app-sandbox .bg-slate-50,
+.dark .react-app-sandbox .bg-slate-100,
+.dark .react-app-sandbox .bg-gray-50,
+.dark .react-app-sandbox .bg-gray-100,
+.dark .react-app-sandbox .bg-zinc-50,
+.dark .react-app-sandbox .bg-zinc-100 {
+  background-color: var(--color-surface-container-high, #2B2930) !important;
+}
+
+.dark .react-app-sandbox .border-slate-100,
+.dark .react-app-sandbox .border-slate-200,
+.dark .react-app-sandbox .border-slate-300,
+.dark .react-app-sandbox .border-gray-100,
+.dark .react-app-sandbox .border-gray-200,
+.dark .react-app-sandbox .border-gray-300 {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+.dark .react-app-sandbox .text-slate-900,
+.dark .react-app-sandbox .text-slate-800,
+.dark .react-app-sandbox .text-slate-700,
+.dark .react-app-sandbox .text-gray-900,
+.dark .react-app-sandbox .text-gray-800,
+.dark .react-app-sandbox .text-gray-700,
+.dark .react-app-sandbox .text-zinc-900,
+.dark .react-app-sandbox .text-zinc-800 {
+  color: var(--color-on-surface, #E6E1E5) !important;
+}
+
+.dark .react-app-sandbox .text-slate-600,
+.dark .react-app-sandbox .text-slate-500,
+.dark .react-app-sandbox .text-slate-400,
+.dark .react-app-sandbox .text-gray-600,
+.dark .react-app-sandbox .text-gray-500,
+.dark .react-app-sandbox .text-gray-400 {
+  color: var(--color-on-surface-variant, #CAC4D0) !important;
+}
+
+.dark .react-app-sandbox select {
+  background-color: var(--color-surface-container-low, #1F1D24) !important;
+  color: var(--color-on-surface, #E6E1E5) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.dark .react-app-sandbox svg line[stroke="#e2e8f0"],
+.dark .react-app-sandbox svg line[stroke="#cbd5e1"],
+.dark .react-app-sandbox svg line[stroke="#e5e7eb"] {
+  stroke: rgba(255, 255, 255, 0.12) !important;
+}
+
+.dark .react-app-sandbox svg text[fill="#94a3b8"],
+.dark .react-app-sandbox svg text[fill="#64748b"],
+.dark .react-app-sandbox svg text[fill="#6b7280"] {
+  fill: var(--color-on-surface-variant, #CAC4D0) !important;
+}
+
+.dark .react-app-sandbox svg circle[fill="#fff"],
+.dark .react-app-sandbox svg circle[fill="#ffffff"] {
+  fill: var(--color-surface, #141218) !important;
+}

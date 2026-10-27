@@ -359,37 +359,14 @@ export const PinChatPopover: React.FC<PinChatPopoverProps> = ({
             )}
 
             {!loadingMessages && messages.length === 0 && !isStreaming && (
-              <div className="space-y-2.5">
-                <div className="p-3 text-center text-m3-on-surface-variant/80 rounded-2xl bg-m3-surface-container-lowest border border-dashed border-m3-outline-variant/20">
-                  <Bot className="w-5 h-5 mx-auto mb-1 text-m3-primary/70" />
-                  <p className="text-xs font-semibold text-m3-on-surface">
-                    Pin Copilot Ready
-                  </p>
-                  <p className="text-[11px] text-m3-on-surface-variant mt-0.5">
-                    Ask questions or request modifications anchored to this visual.
-                  </p>
-                </div>
-
-                <div className="space-y-1.5">
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-m3-on-surface-variant/70 block px-1">
-                    Suggested Quick Prompts:
-                  </span>
-                  {[
-                    'Explain trend variance and key metrics',
-                    'Identify performance dips or anomalies',
-                    'Update widget styling and theme contrast',
-                  ].map((prompt, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => triggerPrompt(prompt)}
-                      className="w-full p-2 rounded-xl bg-m3-surface-container-low hover:bg-m3-surface-container text-left text-xs text-m3-on-surface transition-all border border-m3-outline-variant/20 flex items-center justify-between group cursor-pointer"
-                    >
-                      <span>{prompt}</span>
-                      <Sparkles className="w-3 h-3 text-m3-primary opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </button>
-                  ))}
-                </div>
+              <div className="p-4 text-center text-m3-on-surface-variant/80 rounded-2xl bg-m3-surface-container-lowest border border-dashed border-m3-outline-variant/20">
+                <Bot className="w-5 h-5 mx-auto mb-1.5 text-m3-primary/70" />
+                <p className="text-xs font-semibold text-m3-on-surface">
+                  Pin Copilot Ready
+                </p>
+                <p className="text-[11px] text-m3-on-surface-variant mt-0.5">
+                  Ask questions or request modifications anchored to this visual.
+                </p>
               </div>
             )}
 

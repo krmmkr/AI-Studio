@@ -50,15 +50,14 @@ backend/app/static/index.html
 # Local SQLite & DuckDB databases, persistent volumes & storage
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 *.duckdb
 *.duckdb.wal
-local_data/*.db*
-local_data/*.wal
-local_data/*.shm
-local_data/storage/
-local_data/repos/
+local_data/*
+!local_data/.gitkeep
 *_report.md
 
 # Environment files & secrets

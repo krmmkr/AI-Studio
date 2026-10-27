@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { authApi } from '../../api/client';
 import { User as UserType } from '../../types';
-import { Lock, Mail, Loader2, Sparkles } from 'lucide-react';
+import { Lock, Mail, Loader2 } from 'lucide-react';
+import { AIStudioLogo } from '../Common/AIStudioLogo';
 
 interface LoginModalProps {
   onSuccess: (user: UserType) => void;
@@ -30,16 +31,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess }) => {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
       <div className="bg-m3-surface rounded-4xl max-w-sm w-full p-6 sm:p-8 shadow-2xl border border-m3-outline-variant/30 flex flex-col">
-        <div className="flex items-center gap-2 mb-2">
-          <div className="w-8 h-8 rounded-full bg-m3-primary-container text-m3-on-primary-container flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-m3-primary" />
-          </div>
-          <span className="font-bold text-base text-m3-on-surface">Antigravity Studio</span>
+        <div className="flex items-center gap-2 mb-3">
+          <AIStudioLogo size="sm" showText={true} />
         </div>
 
         <h2 className="text-xl font-bold text-m3-on-surface tracking-tight mb-1">Welcome back</h2>
         <p className="text-xs text-m3-on-surface-variant mb-6">
-          Sign in to access your Antigravity agent and connected MCP tools.
+          Sign in to access your AI Studio agent, workspaces, and connected tools.
         </p>
 
         {error && (

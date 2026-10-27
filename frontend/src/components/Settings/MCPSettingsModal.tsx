@@ -642,7 +642,7 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
                         onChange={(e) => setTransport(e.target.value as any)}
                         className="w-full px-3.5 py-2 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs text-m3-on-surface outline-none focus:border-m3-primary"
                       >
-                        <option value="streamable_http">Streamable HTTP (/mcp — Superset 7.0 & FastMCP)</option>
+                        <option value="streamable_http">Streamable HTTP (/mcp — FastMCP & Remote MCP)</option>
                         <option value="sse">SSE (Server-Sent Events /sse)</option>
                         <option value="http">HTTP JSON-RPC POST</option>
                       </select>

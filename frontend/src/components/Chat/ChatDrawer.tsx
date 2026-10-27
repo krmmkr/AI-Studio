@@ -24,20 +24,6 @@ interface ChatDrawerProps {
   onCanvasAction: (action: { action: string; widget: DashboardWidget }) => void;
 }
 
-const GITHUB_PROMPTS = [
-  "Analyze commit churn & peak velocity by hour for repo",
-  "Audit code review turnaround and PR SLA bottlenecks",
-  "Show top authors by commit activity and merged lines",
-  "Review recent PR diffs for memory leaks & security",
-];
-
-const SUPERSET_PROMPTS = [
-  "Query Superset weekly transactions via headless BI",
-  "Explore table metadata from Data Catalog MCP",
-  "Plot regional revenue distribution and average deal size",
-  "Compare weekly query execution volume vs p95 latency",
-];
-
 export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   currentSessionId,
   currentDashboardId,
@@ -59,7 +45,6 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const activePersona = personas.find((p) => p.id === activeAgentId) || personas[0];
-  const promptSuggestions = activeAgentId === 'superset-agent' ? SUPERSET_PROMPTS : GITHUB_PROMPTS;
 
   const scrollToBottom = () => {
     if (messagesContainerRef.current) {
@@ -292,24 +277,11 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
               {getAgentIcon(activeAgentId)}
             </div>
             <h3 className="font-semibold text-sm text-m3-on-surface mb-1">
-              {activePersona?.name || 'Antigravity Agent'}
+              {activePersona?.name || 'AI Studio Agent'}
             </h3>
-            <p className="text-xs text-m3-on-surface-variant mb-5 max-w-xs leading-relaxed">
+            <p className="text-xs text-m3-on-surface-variant max-w-xs leading-relaxed">
               {activePersona?.role_description}
             </p>
-
-            {/* Prompt Suggestion Chips */}
-            <div className="flex flex-col gap-2 w-full">
-              {promptSuggestions.map((prompt, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleSend(prompt)}
-                  className="text-left text-xs p-3 rounded-2xl bg-m3-surface-container-lowest hover:bg-m3-surface-container-high border border-m3-outline-variant/30 text-m3-on-surface transition-all shadow-2xs hover:shadow-xs"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
           </div>
         ) : (
           messages.map((msg, index) => <MessageItem key={index} message={msg} />)

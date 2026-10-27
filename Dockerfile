@@ -36,8 +36,13 @@ COPY ARCHITECTURE.md ./ARCHITECTURE.md
 # Copy compiled frontend assets from frontend-builder
 COPY --from=frontend-builder /app/backend/app/static ./backend/app/static
 
-# Ensure persistent storage directories exist
-RUN mkdir -p /app/local_data/storage
+# Ensure persistent storage directories exist with open permissions
+RUN mkdir -p /app/local_data/storage \
+             /app/local_data/repos \
+             /app/local_data/derived_datasets \
+             /app/local_data/agent_sessions \
+             /app/local_data/antigravity_app_data \
+    && chmod -R 777 /app/local_data
 
 # Environment defaults
 ENV ENVIRONMENT=production

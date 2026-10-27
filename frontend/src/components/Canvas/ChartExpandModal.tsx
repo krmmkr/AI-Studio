@@ -84,13 +84,14 @@ export const ChartExpandModal: React.FC<ChartExpandModalProps> = ({ widget, onCl
     }
   };
 
-  const isTable =
-    widget.widget_type === 'table' ||
-    (widget.widget_type !== 'echarts' &&
-      (Boolean(widget.spec?.rows && Array.isArray(widget.spec.rows)) ||
-        Boolean(widget.spec?.table_data && Array.isArray(widget.spec.table_data.rows))));
-
   const isReactApp = widget.widget_type === 'react_app';
+
+  const isTable =
+    !isReactApp &&
+    (widget.widget_type === 'table' ||
+      (widget.widget_type !== 'echarts' &&
+        (Boolean(widget.spec?.rows && Array.isArray(widget.spec.rows)) ||
+          Boolean(widget.spec?.table_data && Array.isArray(widget.spec.table_data.rows)))));
 
   return (
     <div
@@ -257,13 +258,17 @@ export const ChartExpandModal: React.FC<ChartExpandModalProps> = ({ widget, onCl
                 )}
               </div>
             </div>
+          ) : isReactApp ? (
+            <div className="flex-1 w-full h-full overflow-auto p-4 rounded-3xl bg-m3-surface-container-low/70 border border-m3-outline-variant/20">
+              <ReactAppWidget
+                title={widget.title}
+                spec={widget.spec}
+                data={widget.spec?.data || widget.spec?.rows}
+              />
+            </div>
           ) : isTable ? (
             <div className="flex-1 w-full h-full overflow-hidden p-4 rounded-3xl bg-m3-surface-container-low/70 border border-m3-outline-variant/20">
               <AdvancedTableWidget spec={widget.spec || {}} />
-            </div>
-          ) : isReactApp ? (
-            <div className="flex-1 w-full h-full overflow-auto p-4 rounded-3xl bg-m3-surface-container-low/70 border border-m3-outline-variant/20">
-              <ReactAppWidget title={widget.title} spec={widget.spec} />
             </div>
           ) : isFilter ? (
             <div className="flex-1 w-full h-full overflow-y-auto p-6 rounded-3xl bg-m3-surface-container-low/70 border border-m3-outline-variant/20 flex flex-col gap-3">

@@ -21,6 +21,7 @@ import {
   ShieldAlert,
   Play,
   FileCode,
+  PauseCircle,
 } from 'lucide-react';
 import { AgentThinkingTrace } from './AgentThinkingTrace';
 
@@ -75,7 +76,7 @@ export const renderInlineMarkdown = (line: string): React.ReactNode[] => {
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**')) {
       return (
-        <strong key={i} className="font-semibold text-m3-on-surface">
+        <strong key={i} className="font-semibold text-m3-on-surface break-words [overflow-wrap:anywhere]">
           {part.slice(2, -2)}
         </strong>
       );
@@ -84,7 +85,7 @@ export const renderInlineMarkdown = (line: string): React.ReactNode[] => {
       return (
         <code
           key={i}
-          className="px-1.5 py-0.5 rounded-md bg-m3-surface-container-high font-mono text-[11px] text-m3-primary border border-m3-outline-variant/30"
+          className="px-1.5 py-0.5 rounded-md bg-m3-surface-container-high font-mono text-[11px] text-m3-primary border border-m3-outline-variant/30 break-all [overflow-wrap:anywhere]"
         >
           {part.slice(1, -1)}
         </code>
@@ -92,13 +93,16 @@ export const renderInlineMarkdown = (line: string): React.ReactNode[] => {
     }
     const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (linkMatch) {
+      const rawHref = (linkMatch[2] || '').trim();
+      const isSafe = /^(https?:\/\/|mailto:|\/|#)/i.test(rawHref);
+      const safeHref = isSafe ? rawHref : '#';
       return (
         <a
           key={i}
-          href={linkMatch[2]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-m3-primary hover:underline font-medium inline-flex items-center gap-0.5"
+          href={safeHref}
+          target={safeHref.startsWith('http') ? '_blank' : undefined}
+          rel={safeHref.startsWith('http') ? 'noopener noreferrer' : undefined}
+          className="text-m3-primary hover:underline font-medium inline-flex items-center gap-0.5 break-all [overflow-wrap:anywhere]"
         >
           {linkMatch[1]}
         </a>
@@ -121,10 +125,10 @@ export const renderMarkdownBlock = (
       elements.push(
         <ul
           key={`${keyPrefix}-list-${elements.length}`}
-          className="list-disc pl-5 space-y-1 my-1.5 text-m3-on-surface"
+          className="list-disc pl-5 space-y-1 my-1.5 text-m3-on-surface w-full min-w-0"
         >
           {currentListItems.map((item, idx) => (
-            <li key={idx} className="leading-relaxed">
+            <li key={idx} className="leading-relaxed break-words [overflow-wrap:anywhere]">
               {renderInlineMarkdown(item)}
             </li>
           ))}
@@ -160,7 +164,7 @@ export const renderMarkdownBlock = (
       elements.push(
         <h4
           key={`${keyPrefix}-h4-${lineIdx}`}
-          className="text-xs font-bold uppercase tracking-wider text-m3-primary mt-3 mb-1"
+          className="text-xs font-bold uppercase tracking-wider text-m3-primary mt-3 mb-1 break-words [overflow-wrap:anywhere]"
         >
           {trimmed.slice(4)}
         </h4>
@@ -169,7 +173,7 @@ export const renderMarkdownBlock = (
       elements.push(
         <h3
           key={`${keyPrefix}-h3-${lineIdx}`}
-          className="text-sm font-bold text-m3-on-surface mt-3.5 mb-1.5 border-b border-m3-outline-variant/20 pb-1"
+          className="text-sm font-bold text-m3-on-surface mt-3.5 mb-1.5 border-b border-m3-outline-variant/20 pb-1 break-words [overflow-wrap:anywhere]"
         >
           {trimmed.slice(3)}
         </h3>
@@ -178,7 +182,7 @@ export const renderMarkdownBlock = (
       elements.push(
         <h2
           key={`${keyPrefix}-h2-${lineIdx}`}
-          className="text-base font-bold text-m3-on-surface mt-4 mb-2 border-b border-m3-outline-variant/30 pb-1.5"
+          className="text-base font-bold text-m3-on-surface mt-4 mb-2 border-b border-m3-outline-variant/30 pb-1.5 break-words [overflow-wrap:anywhere]"
         >
           {trimmed.slice(2)}
         </h2>
@@ -187,7 +191,7 @@ export const renderMarkdownBlock = (
       elements.push(
         <p
           key={`${keyPrefix}-p-${lineIdx}`}
-          className="leading-relaxed my-1 text-m3-on-surface"
+          className="leading-relaxed my-1 text-m3-on-surface break-words [overflow-wrap:anywhere]"
         >
           {renderInlineMarkdown(trimmed)}
         </p>
@@ -196,7 +200,7 @@ export const renderMarkdownBlock = (
   });
 
   flushList();
-  return <div key={keyPrefix}>{elements}</div>;
+  return <div key={keyPrefix} className="w-full min-w-0">{elements}</div>;
 };
 
 export const parseSegments = (rawContent: string): ContentSegment[] => {
@@ -351,7 +355,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const [proposalStates, setProposalStates] = useState<
     Record<string, { status: 'pending' | 'approved' | 'declined'; loading?: boolean; message?: string }>
   >({});
-  const [selectedInquiryOptions, setSelectedInquiryOptions] = useState<Record<string, string>>({});
+  const [selectedInquiryOptions, setSelectedInquiryOptions] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('antigravity_inquiries_resolved');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -385,22 +396,43 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         description: prop.description,
       });
 
-      if (action === 'approve' && typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('datamind:dataset-created', {
-            detail: { table_name: prop.table_name, result: res.result },
-          })
-        );
+      if (action === 'approve') {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('datamind:dataset-created', {
+              detail: { table_name: prop.table_name, result: res.result },
+            })
+          );
+        }
+        setProposalStates((prev) => ({
+          ...prev,
+          [propId]: {
+            status: 'approved',
+            loading: false,
+            message: `✓ ${res.message || 'Dataset materialized into DuckDB.'} Resuming agent to build visualization...`,
+          },
+        }));
+        // Auto-resume agent in true Antigravity / Claude flow
+        if (onSelectSuggestion) {
+          onSelectSuggestion(
+            `[APPROVED] Dataset '${prop.table_name}' has been approved and materialized into DuckDB (${res.result?.row_count ?? 0} rows). Proceed immediately to build the visualization and mount the widget on the canvas.`
+          );
+        }
+      } else {
+        setProposalStates((prev) => ({
+          ...prev,
+          [propId]: {
+            status: 'declined',
+            loading: false,
+            message: '✕ Proposal declined.',
+          },
+        }));
+        if (onSelectSuggestion) {
+          onSelectSuggestion(
+            `[DECLINED] The proposal to create dataset '${prop.table_name}' was declined. Please acknowledge and ask what alternative approach you should take.`
+          );
+        }
       }
-
-      setProposalStates((prev) => ({
-        ...prev,
-        [propId]: {
-          status: action === 'approve' ? 'approved' : 'declined',
-          loading: false,
-          message: res.message,
-        },
-      }));
     } catch (err: any) {
       setProposalStates((prev) => ({
         ...prev,
@@ -414,7 +446,13 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   };
 
   const handleSelectOption = (inquiryId: string, option: string) => {
-    setSelectedInquiryOptions((prev) => ({ ...prev, [inquiryId]: option }));
+    setSelectedInquiryOptions((prev) => {
+      const next = { ...prev, [inquiryId]: option };
+      try {
+        localStorage.setItem('antigravity_inquiries_resolved', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     if (onSelectSuggestion) {
       onSelectSuggestion(option);
     }
@@ -423,17 +461,17 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const segments = isAssistant ? parseSegments(message.content) : [];
 
   return (
-    <div className={`flex gap-3 mb-4 ${isAssistant ? 'items-start' : 'items-start justify-end'}`}>
+    <div className={`flex gap-3 mb-4 w-full min-w-0 ${isAssistant ? 'items-start' : 'items-start justify-end'}`}>
       {isAssistant && (
         <div className="w-8 h-8 rounded-full bg-m3-primary-container text-m3-on-primary-container flex items-center justify-center shrink-0 shadow-xs mt-0.5">
           <Bot className="w-4 h-4 text-m3-primary" />
         </div>
       )}
 
-      <div className={`max-w-[88%] w-full flex flex-col ${isAssistant ? 'items-start' : 'items-end'}`}>
+      <div className={`max-w-[88%] w-full min-w-0 flex flex-col ${isAssistant ? 'items-start' : 'items-end'}`}>
         {/* Collapsible AGY-style Thinking & Tool Trace */}
         {isAssistant && (isStreaming || message.thoughts || (message.tool_calls && message.tool_calls.length > 0)) && (
-          <div className="w-full mb-2">
+          <div className="w-full min-w-0 mb-2">
             <AgentThinkingTrace
               thoughts={message.thoughts}
               toolCalls={message.tool_calls}
@@ -444,18 +482,18 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
         {/* Message Bubble */}
         <div
-          className={`p-4 rounded-3xl text-sm leading-relaxed w-full ${
+          className={`p-4 rounded-3xl text-sm leading-relaxed w-full min-w-0 break-words [overflow-wrap:anywhere] ${
             isAssistant
               ? 'bg-m3-surface-container-low text-m3-on-surface border border-m3-outline-variant/30 shadow-2xs rounded-tl-sm'
               : 'bg-m3-primary text-m3-on-primary shadow-xs rounded-tr-sm'
           }`}
         >
           {!isAssistant ? (
-            <div className="whitespace-pre-wrap">{message.content}</div>
+            <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0">{message.content}</div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-3 w-full min-w-0">
               {segments.length === 0 ? (
-                <div className="whitespace-pre-wrap">{message.content}</div>
+                <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0">{message.content}</div>
               ) : (
                 segments.map((seg, idx) => {
                   const segId = `seg-${idx}`;
@@ -581,6 +619,24 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 })
               )}
 
+              {/* Antigravity / Claude Paused Indicator */}
+              {(allProposals.some((p) => (proposalStates[p.id]?.status || p.status) === 'pending') ||
+                allInquiries.some((i) => !selectedInquiryOptions[i.id])) && (
+                <div className="flex items-center gap-2 px-3 py-1.5 my-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 text-[11px] font-semibold w-fit animate-pulse">
+                  <PauseCircle className="w-4 h-4 shrink-0 text-amber-500" />
+                  <span>Agent Paused · Awaiting Your Approval to Proceed</span>
+                </div>
+              )}
+
+              {(allProposals.length > 0 || allInquiries.length > 0) &&
+                allProposals.every((p) => (proposalStates[p.id]?.status || p.status) !== 'pending') &&
+                allInquiries.every((i) => Boolean(selectedInquiryOptions[i.id])) && (
+                <div className="flex items-center gap-2 px-3 py-1.5 my-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[11px] font-semibold w-fit">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                  <span>Action Confirmed · Agent Resumed</span>
+                </div>
+              )}
+
               {/* Interactive Dataset Creation Proposals (User-in-the-loop confirmation) */}
               {allProposals.map((prop) => {
                 const currentStatus = proposalStates[prop.id]?.status || prop.status;
@@ -590,7 +646,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 return (
                   <div
                     key={prop.id}
-                    className="my-3 rounded-2xl border border-amber-500/40 bg-amber-500/5 dark:bg-amber-500/10 p-3.5 shadow-2xs"
+                    className="my-3 rounded-2xl border border-amber-500/40 bg-amber-500/5 dark:bg-amber-500/10 p-3.5 shadow-2xs w-full min-w-0 overflow-hidden break-words"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-start gap-2.5">
@@ -788,14 +844,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 // Extract command if command approval
                 let commandText = inq.command || '';
                 let commandRationale = inq.rationale || '';
-                let approveOptString = inq.options[0] || 'Approve & Run Command';
-                const declineOptString = inq.options.find((o) => o.toLowerCase().includes('decline')) || 'Decline';
 
                 if (isCommandApproval) {
                   if (!commandText) {
                     const runOpt = inq.options.find((o) => o.startsWith('Approve: Run `') || o.startsWith('Approve: Run '));
                     if (runOpt) {
-                      approveOptString = runOpt;
                       const raw = runOpt.replace(/^Approve:\s*Run\s*/i, '').trim();
                       commandText = raw.replace(/^`|`$/g, '').trim();
                     } else if (inq.context) {
@@ -821,7 +874,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                   return (
                     <div
                       key={inq.id}
-                      className="my-3 rounded-2xl border border-amber-500/35 bg-amber-500/5 dark:bg-amber-500/10 p-3.5 shadow-2xs"
+                      className="my-3 rounded-2xl border border-amber-500/35 bg-amber-500/5 dark:bg-amber-500/10 p-3.5 shadow-2xs w-full min-w-0 overflow-hidden break-words"
                     >
                       <div className="flex items-start gap-2.5">
                         <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 mt-0.5 shadow-inner">
@@ -901,14 +954,24 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                                 <>
                                   <button
                                     type="button"
-                                    onClick={() => handleSelectOption(inq.id, declineOptString)}
+                                    onClick={() =>
+                                      handleSelectOption(
+                                        inq.id,
+                                        `[DECLINED] Command \`${commandText}\` was declined. Do not execute it.`
+                                      )
+                                    }
                                     className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-m3-on-surface-variant hover:bg-m3-surface-container transition-colors cursor-pointer border border-m3-outline-variant/30"
                                   >
                                     Decline
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => handleSelectOption(inq.id, approveOptString)}
+                                    onClick={() =>
+                                      handleSelectOption(
+                                        inq.id,
+                                        `[APPROVED] Command approved: Run \`${commandText}\`. Execute the command and proceed with the results.`
+                                      )
+                                    }
                                     className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
                                   >
                                     <Play className="w-3.5 h-3.5 fill-current" />
@@ -926,11 +989,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
                 // If File Edit Approval
                 if (isFileEditApproval) {
-                  const fileApproveOpt = inq.options[0] || 'Approve: Update file';
                   return (
                     <div
                       key={inq.id}
-                      className="my-3 rounded-2xl border border-blue-500/35 bg-blue-500/5 dark:bg-blue-500/10 p-3.5 shadow-2xs"
+                      className="my-3 rounded-2xl border border-blue-500/35 bg-blue-500/5 dark:bg-blue-500/10 p-3.5 shadow-2xs w-full min-w-0 overflow-hidden break-words"
                     >
                       <div className="flex items-start gap-2.5">
                         <div className="w-8 h-8 rounded-xl bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 mt-0.5 shadow-inner">
@@ -967,18 +1029,28 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                               <>
                                 <button
                                   type="button"
-                                  onClick={() => handleSelectOption(inq.id, declineOptString)}
+                                  onClick={() =>
+                                    handleSelectOption(
+                                      inq.id,
+                                      `[DECLINED] File modification for \`${inq.file_path || 'file'}\` was declined.`
+                                    )
+                                  }
                                   className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-m3-on-surface-variant hover:bg-m3-surface-container transition-colors cursor-pointer border border-m3-outline-variant/30"
                                 >
                                   Decline
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleSelectOption(inq.id, fileApproveOpt)}
+                                  onClick={() =>
+                                    handleSelectOption(
+                                      inq.id,
+                                      `[APPROVED] File modification approved for \`${inq.file_path || 'file'}\`. Apply the edit and confirm.`
+                                    )
+                                  }
                                   className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors cursor-pointer"
                                 >
                                   <Check className="w-3.5 h-3.5" />
-                                  <span>{fileApproveOpt.length > 40 ? 'Approve & Apply Edit' : fileApproveOpt}</span>
+                                  <span>Approve & Apply Edit</span>
                                 </button>
                               </>
                             )}
@@ -989,51 +1061,139 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                   );
                 }
 
-                // Generic inquiry / recommendations / Chart Update Approval
+                // If Chart Update Approval
+                if (isChartUpdateApproval) {
+                  return (
+                    <div
+                      key={inq.id}
+                      className="my-3 rounded-2xl border border-indigo-500/35 bg-indigo-500/5 dark:bg-indigo-500/10 p-3.5 shadow-2xs w-full min-w-0 overflow-hidden break-words"
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-indigo-500/15 text-indigo-500 flex items-center justify-center shrink-0 mt-0.5 shadow-inner">
+                          <BarChart3 className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-xs font-bold text-m3-on-surface flex items-center gap-1.5">
+                              <BarChart3 className="w-3.5 h-3.5 text-indigo-500" />
+                              Chart Update Approval
+                            </span>
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 font-semibold border border-indigo-500/20">
+                              Canvas Guard
+                            </span>
+                          </div>
+                          <p className="text-xs text-m3-on-surface mt-1 font-semibold">{inq.question}</p>
+                          {inq.context && (
+                            <div className="text-[11px] text-m3-on-surface-variant/90 mt-1 whitespace-pre-wrap leading-relaxed font-mono bg-m3-surface-container-lowest/80 p-2.5 rounded-xl border border-m3-outline-variant/20">
+                              {inq.context}
+                            </div>
+                          )}
+
+                          {/* Action Buttons Bar */}
+                          <div className="flex items-center justify-between gap-3 mt-3 pt-2.5 border-t border-indigo-500/20 flex-wrap">
+                            <span className="text-[10px] font-mono text-indigo-700/80 dark:text-indigo-400/80">
+                              Requires user authorization to modify existing chart
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {chosenOption ? (
+                                <span
+                                  className={`text-xs font-semibold px-3 py-1 rounded-full border ${
+                                    chosenOption.toLowerCase().includes('decline')
+                                      ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20'
+                                      : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                  }`}
+                                >
+                                  {chosenOption.toLowerCase().includes('decline')
+                                    ? '✕ Update Declined'
+                                    : '✓ ' + chosenOption.replace(/^\[(?:SELECTED OPTION|APPROVED|DECLINED|DECISION)\]\s*/i, '')}
+                                </span>
+                              ) : (
+                                inq.options.map((opt, optIdx) => {
+                                  const isDecline = opt.toLowerCase().includes('decline');
+                                  const isApprove = opt.toLowerCase().includes('approve');
+                                  const targetTitle = inq.question.replace(/^Update existing chart\s*['"]?|['"]\?$/gi, '').trim() || 'chart';
+                                  const actionPrompt = isApprove
+                                    ? `[APPROVED] Proceed with updating widget '${targetTitle}' with the proposed changes.`
+                                    : isDecline
+                                    ? `[DECLINED] Keep existing widget '${targetTitle}' unchanged.`
+                                    : `[DECISION] Add as a new separate widget on the canvas instead of replacing '${targetTitle}'.`;
+                                  return (
+                                    <button
+                                      key={optIdx}
+                                      type="button"
+                                      onClick={() => handleSelectOption(inq.id, actionPrompt)}
+                                      className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                                        isDecline
+                                          ? 'text-m3-on-surface-variant hover:bg-m3-surface-container border border-m3-outline-variant/30'
+                                          : isApprove
+                                          ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
+                                          : 'bg-m3-surface-container text-m3-on-surface hover:bg-m3-surface-container-high border border-m3-outline-variant/30'
+                                      }`}
+                                    >
+                                      {opt}
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Generic inquiry / recommendations
                 return (
                   <div
                     key={inq.id}
-                    className="my-3 rounded-2xl border border-indigo-500/30 bg-indigo-500/5 dark:bg-indigo-500/10 p-3.5 shadow-2xs"
+                    className="my-3 rounded-2xl border border-indigo-500/30 bg-indigo-500/5 dark:bg-indigo-500/10 p-3.5 shadow-2xs w-full min-w-0 overflow-hidden break-words"
                   >
                     <div className="flex items-start gap-2.5">
                       <div className="w-8 h-8 rounded-xl bg-indigo-500/15 text-indigo-500 flex items-center justify-center shrink-0 mt-0.5 shadow-inner">
-                        {isChartUpdateApproval ? <BarChart3 className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
+                        <Sparkles className="w-4 h-4" />
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-bold text-m3-on-surface flex items-center gap-2">
-                          <span>{isChartUpdateApproval ? 'Chart Update Request' : 'Agent Recommendation / Question'}</span>
+                          <span>Agent Recommendation / Question</span>
                         </div>
                         <p className="text-xs text-m3-on-surface mt-1 font-medium">{inq.question}</p>
-                        {inq.context && (
+                        {inq.context && !chosenOption && (
                           <div className="text-[11px] text-m3-on-surface-variant/80 mt-1 whitespace-pre-wrap leading-relaxed">
                             {inq.context}
                           </div>
                         )}
 
-                        {/* Interactive Choice Buttons */}
-                        <div className="flex flex-wrap gap-2 mt-3">
-                          {inq.options.map((opt, optIdx) => {
-                            const isChosen = chosenOption === opt;
-                            const isLong = opt.length > 45 || opt.includes('\n');
-                            return (
-                              <button
-                                key={optIdx}
-                                type="button"
-                                onClick={() => handleSelectOption(inq.id, opt)}
-                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                                  isLong ? 'w-full justify-between text-left' : ''
-                                } ${
-                                  isChosen
-                                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                                    : 'bg-m3-surface-container border-m3-outline-variant/30 text-m3-on-surface hover:border-indigo-500/50 hover:bg-indigo-500/10'
-                                }`}
-                              >
-                                {isChosen && <Check className="w-3.5 h-3.5 shrink-0" />}
-                                <span className={isLong ? 'truncate max-w-[90%]' : ''}>{opt}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
+                        {/* Interactive Choice Buttons or Resolved Badge */}
+                        {chosenOption ? (
+                          <div className="mt-2.5 pt-2 border-t border-indigo-500/15 flex items-center justify-between flex-wrap gap-2">
+                            <span className="text-[10px] text-m3-on-surface-variant font-mono">
+                              Decision confirmed
+                            </span>
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30">
+                              <Check className="w-3.5 h-3.5" />
+                              <span>{chosenOption.replace(/^\[(?:SELECTED OPTION|APPROVED|DECLINED|DECISION)\]\s*/i, '')}</span>
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-2 mt-3">
+                            {inq.options.map((opt, optIdx) => {
+                              const isLong = opt.length > 45 || opt.includes('\n');
+                              return (
+                                <button
+                                  key={optIdx}
+                                  type="button"
+                                  onClick={() => handleSelectOption(inq.id, `[SELECTED OPTION] ${opt}`)}
+                                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                                    isLong ? 'w-full justify-between text-left' : ''
+                                  } bg-m3-surface-container border-m3-outline-variant/30 text-m3-on-surface hover:border-indigo-500/50 hover:bg-indigo-500/10`}
+                                >
+                                  <span className={isLong ? 'truncate max-w-[90%]' : ''}>{opt}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

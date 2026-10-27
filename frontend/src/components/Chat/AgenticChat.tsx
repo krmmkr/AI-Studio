@@ -63,7 +63,6 @@ export const AgenticChat: React.FC<AgenticChatProps> = ({
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selectedAgentId, setSelectedAgentId] = useState<string>('general');
   const [selectedProvider, setSelectedProvider] = useState<string>('');
-  const [runtimeProviders, setRuntimeProviders] = useState<Array<{ id: string; label: string; model: string; base_url?: string }>>([]);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [mountedWidgetToast, setMountedWidgetToast] = useState<{
     title: string;
@@ -147,9 +146,6 @@ export const AgenticChat: React.FC<AgenticChatProps> = ({
       .then((info) => {
         if (info?.default_provider) {
           setSelectedProvider(info.default_provider);
-        }
-        if (info?.providers) {
-          setRuntimeProviders(info.providers);
         }
       })
       .catch(() => {});
@@ -1037,37 +1033,6 @@ export const AgenticChat: React.FC<AgenticChatProps> = ({
                       </div>
                     )}
                   </div>
-
-                  {/* Runtime SDK Toggle Pill (OpenCode SDK vs Antigravity SDK) */}
-                  {runtimeProviders.length > 0 && (() => {
-                    const activeProv = runtimeProviders.find((p) => p.id === (selectedProvider || 'antigravity'));
-                    const isAgy = (selectedProvider || 'antigravity') === 'antigravity';
-                    const label = !isAgy
-                      ? 'OpenCode SDK'
-                      : activeProv?.model
-                      ? `AGY (${activeProv.model})`
-                      : 'Antigravity SDK';
-                    const tooltip = `Active Engine: ${activeProv?.label || selectedProvider} | Model: ${activeProv?.model || 'default'}${
-                      activeProv?.base_url ? ` @ ${activeProv.base_url}` : ''
-                    } (Click to switch runtime)`;
-
-                    return (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = selectedProvider === 'opencode' ? 'antigravity' : 'opencode';
-                          setSelectedProvider(next);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-on-surface-variant border border-m3-outline-variant/30 transition-all cursor-pointer"
-                        title={tooltip}
-                      >
-                        <Zap className="w-3 h-3 text-amber-500 shrink-0" />
-                        <span className="font-medium text-[11px] text-m3-on-surface truncate max-w-[170px]">
-                          {label}
-                        </span>
-                      </button>
-                    );
-                  })()}
                 </div>
 
                 <span className="hidden sm:inline text-[10px] text-m3-outline">

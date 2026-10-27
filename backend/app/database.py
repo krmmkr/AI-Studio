@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 from backend.app.config import DATABASE_URL
@@ -9,6 +10,19 @@ engine_kwargs = {}
 connect_args = {}
 
 if DATABASE_URL.startswith("sqlite"):
+    from sqlalchemy.engine.url import make_url
+    try:
+        parsed = make_url(DATABASE_URL)
+        if parsed.database and parsed.database != ":memory:":
+            db_file_path = Path(parsed.database)
+            db_file_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                import os
+                os.chmod(db_file_path.parent, 0o777)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Could not verify database directory for {DATABASE_URL}: {e}")
     connect_args["check_same_thread"] = False
     connect_args["timeout"] = 15  # Wait up to 15s for locks before failing
     engine_kwargs["connect_args"] = connect_args

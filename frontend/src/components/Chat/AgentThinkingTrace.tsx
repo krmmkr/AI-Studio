@@ -42,7 +42,7 @@ export const AgentThinkingTrace: React.FC<AgentThinkingTraceProps> = ({
 
   return (
     <div
-      className={`rounded-xl border transition-colors ${
+      className={`rounded-xl border transition-colors w-full min-w-0 ${
         isStreaming
           ? 'border-[#6750A4]/25 bg-[#F3EDF7]/60 dark:bg-[#2B253A]/50'
           : 'border-[#E7E0EC] dark:border-[#36343B] bg-[#F7F2FA]/70 dark:bg-[#1D1B20]/70'
@@ -92,7 +92,7 @@ export const AgentThinkingTrace: React.FC<AgentThinkingTraceProps> = ({
               className="flex items-start gap-2 text-[11px] text-[#49454F] dark:text-[#CAC4D0] font-mono leading-relaxed"
             >
               <span className="text-[#6750A4] dark:text-[#D0BCFF] select-none shrink-0">›</span>
-              <span className="break-words">{line}</span>
+              <span className="break-words [overflow-wrap:anywhere] min-w-0">{line}</span>
             </div>
           ))}
 

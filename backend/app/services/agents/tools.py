@@ -305,10 +305,13 @@ def build_layered_system_prompt(
         "1. Dynamic Git & Codebase Extraction: There are NO pre-baked telemetry tables (`github_commits` or `github_contributors`) unless explicitly created. Instead, use `extract_repository_dataset_records` to dynamically extract structured records tailored to the user's requirement (e.g., `mode='features_and_modules'` for features/components/routes and who authored them, `mode='issues_todos_and_fixes'` for code TODOs/FIXMEs and bugfix commits with authors, `mode='file_ownership_and_churn'` for module/file ownership, or `mode='git_search'` for custom git history queries).\n"
         "2. Deep Codebase Intelligence (Autonomous Read): Use `list_repository_files`, `search_repository_code`, `read_repository_file`, `analyze_code_complexity`, and `analyze_git_repository` to inspect source code, AST complexity, and repository history.\n"
         "3. Dynamic Schema-Free Dataset Proposals: You can propose ANY custom DuckDB table schema based on the user's request! Call `propose_duckdb_dataset(table_name=..., description=..., records=[...])` (or pass `propose_table_name` directly to `extract_repository_dataset_records`, or pass a `sql_query` transforming an existing table). The user will see an interactive confirmation card with schema, row count, and sample rows to Approve & Create.\n"
-        "4. Critical Gated Operations (Approval Required): Always call `propose_file_edit` before modifying code files, and `propose_repository_command` before running shell commands.\n"
-        "5. Interactive Recommendations & Questions: When you have recommendations or design questions, call `ask_user_confirmation` to present interactive choice buttons directly to the user.\n"
+        "4. Interactive Human-in-the-Loop Gating (Pause Immediately): When you call any gated proposal or confirmation tool (`propose_duckdb_dataset`, `propose_repository_command`, `propose_file_edit`, `ask_user_confirmation`, or `upsert_chart_widget` / `create_react_widget` when requesting replacement confirmation), you MUST STOP your turn immediately! Do NOT generate redundant conversational text, do NOT guess the user's choice, and do NOT ask duplicate questions in text. The interactive card in the UI presents the action and choice buttons directly to the user. Stop your response and wait for the user's decision.\n"
+        "5. Resuming Execution After Approval: When the user approves or declines a proposal, or selects an inquiry option, you will receive their decision as the next turn (e.g., `[APPROVED] ...`, `[DECLINED] ...`, or `[SELECTED OPTION] ...`). Immediately carry out the approved action (e.g. mount the widget with `user_confirmed=True`, query the dataset, run the command) without re-asking questions or re-proposing.\n"
         "6. Safe Chart Updates (Permission Required): Never silently replace or overwrite existing canvas charts! If updating an existing chart (`widget_id`), `upsert_chart_widget` will automatically present an approval request with options ('Approve: Update', 'Add as New Chart Instead', 'Decline'). Only pass `user_confirmed=True` when the user has explicitly confirmed replacing the chart. To add a new chart alongside existing ones, leave `widget_id` empty.\n"
-        "7. Canvas Visualizations & Reports: Use `upsert_chart_widget` (supporting either `sql_query` against any DuckDB/staged dataset OR `data_records` directly!) and `create_markdown_report_widget` to mount interactive Apache ECharts visualizations and engineering reports onto the active dashboard canvas.\n"
+        "7. Canvas Visualizations, React Components & Reports:\n"
+        "   - ECharts & Tables: Call `upsert_chart_widget(title=..., archetype=..., sql_query=... or data_records=[...])`.\n"
+        "   - Custom Interactive React Components: When the user asks for customized interactive visualization, DAG/tree flows, interactive simulation sliders, operational status boards, or any custom UI app that cannot be represented by standard charts, call `create_react_widget(title=..., component_code=..., description=..., datasource_query=...)` to build dynamic, interactive React components with live state (`useState`, `useEffect`), Tailwind CSS classes, and Lucide icons.\n"
+        "   - Markdown Report Cards: Call `create_markdown_report_widget(title=..., markdown_content=...)`.\n"
         "8. High Signal & No Hallucination: Keep chat responses concise, well-structured, and free of repeated boilerplate text. Never fabricate metrics or repository names."
     )
 
@@ -570,7 +573,7 @@ def build_agent_tools(
             "table_name": safe_name,
             "row_count": preview_row_count,
             "columns": columns,
-            "message": f"Proposal for dataset '{safe_name}' ({preview_row_count} rows, columns: {columns}) displayed to user for confirmation. You can also query `{safe_name}` in `upsert_chart_widget` immediately.",
+            "message": f"Proposal for dataset '{safe_name}' ({preview_row_count} rows, columns: {columns}) displayed to user for confirmation. STOP YOUR TURN NOW and wait for user approval before continuing.",
         }
 
     def ask_user_confirmation(
@@ -602,7 +605,7 @@ def build_agent_tools(
             "inquiry_id": inq_id,
             "question": question,
             "options": options,
-            "message": "Question presented to user with clickable choice chips in chat.",
+            "message": "Question presented to user with clickable choice chips in chat. STOP YOUR TURN NOW and wait for user selection.",
         }
 
     def materialize_duckdb_dataset(
@@ -713,7 +716,7 @@ def build_agent_tools(
                 "proposed_archetype": archetype,
                 "message": (
                     f"Existing chart '{target_title}' (`{widget_id}`) is protected from accidental replacement. "
-                    f"An approval request with options ('Approve: Update', 'Add as New Chart Instead', 'Decline Update') has been displayed to the user."
+                    f"An approval request has been displayed to the user. STOP YOUR TURN NOW and wait for user confirmation."
                 ),
             }
 
@@ -825,7 +828,7 @@ def build_agent_tools(
                 "proposed_title": title,
                 "message": (
                     f"Existing report card '{target_title}' (`{widget_id}`) is protected from accidental replacement. "
-                    f"An approval request has been displayed to the user."
+                    f"An approval request has been displayed to the user. STOP YOUR TURN NOW and wait for user confirmation."
                 ),
             }
 
@@ -856,6 +859,157 @@ def build_agent_tools(
             "action": action_event["action"],
             "widget_id": w_id,
             "title": title,
+        }
+
+    def create_react_widget(
+        title: str,
+        component_code: str,
+        description: str = "",
+        widget_id: str = "",
+        datasource_query: str = "",
+        refresh_recipe: dict[str, Any] | None = None,
+        grid_w: int = 6,
+        grid_h: int = 5,
+        user_confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Creates or updates a custom interactive React component widget on the active dashboard canvas.
+        Use this whenever the user asks for a custom React component, interactive visualization,
+        DAG flow, simulation controls, or specialized interactive UI that cannot be represented by standard charts.
+        
+        Parameters:
+        - title: Descriptive title of the React component.
+        - component_code: Full React component code, e.g. `export default function Widget({ data, filters }) { ... }` or `function Widget({ data, filters }) { ... }`.
+          You have access to React, useState, useEffect, useMemo, useCallback, useRef, Tailwind CSS classes, and Lucide icons.
+          THEME SUPPORT: Always ensure the component looks great in both light and dark modes! Use semantic Material 3 classes (`bg-m3-surface-container`, `text-m3-on-surface`, `border-m3-outline-variant/30`) or Tailwind dark variants (`bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 text-slate-800 dark:text-zinc-100`). Never hardcode pure white without a dark variant.
+        - description: Brief description of the component's purpose and controls.
+        - widget_id: ID of an existing widget if updating; omit to create a new widget.
+        - datasource_query: Optional SQL query to execute against DuckDB to feed rows into the `data` prop.
+        - refresh_recipe: Optional declarative recipe dictionary specifying how to regenerate the data on repo updates or refreshes.
+          Supported recipe types:
+          * `git_extractor`: `{"recipe_type": "git_extractor", "repo": "<repo_name>", "instruction": "...", "sql_derivation": "SELECT ... FROM staging_records ...", "contract_schema": ["col1", "col2"]}`
+          * `sql_derivation`: `{"recipe_type": "sql_derivation", "sql": "SELECT ...", "instruction": "...", "contract_schema": [...]}`
+        - grid_w: Grid width in columns (default 6, max 12).
+        - grid_h: Grid height in rows (default 5).
+        - user_confirmed: Set to True when user explicitly approved updating an existing widget.
+        """
+        existing_target = None
+        if widget_id and current_dashboard_id:
+            try:
+                from backend.app.database import SessionLocal
+                from backend.app.models import DashboardWidget
+                with SessionLocal() as db:
+                    w_obj = db.query(DashboardWidget).filter(
+                        DashboardWidget.dashboard_id == current_dashboard_id,
+                        DashboardWidget.widget_id == widget_id.strip()
+                    ).first()
+                    if w_obj:
+                        existing_target = {
+                            "id": w_obj.widget_id,
+                            "title": w_obj.title,
+                            "widget_type": w_obj.widget_type,
+                        }
+            except Exception as e:
+                logger.warning(f"Error querying react widget {widget_id}: {e}")
+
+        if existing_target is not None and not user_confirmed:
+            inq_id = f"react-update-{uuid.uuid4().hex[:8]}"
+            target_title = existing_target.get("title") or widget_id
+            inquiry_payload = {
+                "id": inq_id,
+                "type": "chart_update_approval",
+                "target_widget_id": widget_id,
+                "target_title": target_title,
+                "proposed_title": title,
+                "proposed_archetype": "react_app",
+                "question": f"Update existing React component '{target_title}'?",
+                "context": (
+                    f"Target Component: \"{target_title}\" (`{widget_id}`)\n"
+                    f"Proposed New Title: \"{title}\"\n"
+                    f"Description: {description or 'Custom interactive React component'}"
+                ),
+                "options": [
+                    f"Approve: Update '{target_title}'",
+                    "Add as New Component Instead",
+                    "Decline Update",
+                ],
+                "status": "pending",
+            }
+            if emitted_proposals is not None:
+                emitted_proposals.append({
+                    "type": "user_inquiry",
+                    "inquiry": inquiry_payload,
+                })
+            return {
+                "status": "approval_requested",
+                "inquiry_id": inq_id,
+                "target_widget_id": widget_id,
+                "target_title": target_title,
+                "proposed_title": title,
+                "message": (
+                    f"Existing React component '{target_title}' (`{widget_id}`) is protected from accidental replacement. "
+                    f"An approval request has been displayed to the user. STOP YOUR TURN NOW and wait for user confirmation."
+                ),
+            }
+
+        data_rows = []
+        if datasource_query:
+            try:
+                q_res = duckdb_service.execute_widget_query(datasource_query, filter_scope="global")
+                if not q_res.get("error"):
+                    data_rows = q_res.get("data", [])
+            except Exception as e:
+                logger.warning(f"Error executing datasource query for react widget: {e}")
+
+        # Check if an explicit or derived recipe is available
+        effective_recipe = refresh_recipe
+        if not effective_recipe and datasource_query:
+            import re
+            m = re.search(r"FROM\s+([a-zA-Z0-9_]+)", datasource_query, re.IGNORECASE)
+            if m:
+                source_tbl = m.group(1).lower()
+                effective_recipe = duckdb_service.get_dataset_recipe(source_tbl)
+
+        w_id = widget_id.strip() if widget_id else f"agent-react-{int(time.time() * 1000)}"
+        widget_payload = {
+            "id": w_id,
+            "title": title,
+            "widget_type": "react_app",
+            "grid": {"x": 0, "y": 0, "w": min(12, max(3, grid_w)), "h": min(12, max(3, grid_h))},
+            "datasource": {
+                "type": "custom_react",
+                "label": "Dynamic React Component",
+                "query": datasource_query,
+                "sql": datasource_query,
+                "refresh_recipe": effective_recipe,
+            },
+            "spec": {
+                "type": "custom_react",
+                "app_name": title,
+                "description": description,
+                "component_code": component_code,
+                "sql": datasource_query,
+                "data": data_rows,
+                "rows": data_rows,
+                "refresh_recipe": effective_recipe,
+            },
+        }
+        is_update = persist_widget_to_dashboard(
+            current_dashboard_id, widget_payload, resolve_comments_on_update=True
+        )
+        action_event = {
+            "type": "canvas_action",
+            "action": "update_widget" if is_update else "create_widget",
+            "widget": widget_payload,
+        }
+        emitted_canvas_actions.append(action_event)
+        return {
+            "status": "mounted",
+            "action": action_event["action"],
+            "widget_id": w_id,
+            "title": title,
+            "description": description,
+            "row_count": len(data_rows),
         }
 
     def create_single_filter_widget(
@@ -1225,7 +1379,7 @@ def build_agent_tools(
             "inquiry_id": inq_id,
             "repo": target_path.name,
             "command": command,
-            "message": f"Command `{command}` presented to user for interactive confirmation. The user will see clickable choice buttons in chat.",
+            "message": f"Command `{command}` presented to user for interactive authorization. STOP YOUR TURN NOW and wait for user approval.",
         }
 
     def execute_approved_repository_command(
@@ -1296,7 +1450,7 @@ def build_agent_tools(
             "inquiry_id": inq_id,
             "repo": target_path.name,
             "file_path": file_path,
-            "message": f"Proposed edit for `{file_path}` presented to user for interactive confirmation.",
+            "message": f"Proposed edit for `{file_path}` presented to user for interactive confirmation. STOP YOUR TURN NOW and wait for user approval.",
         }
 
     def apply_approved_file_edit(
@@ -1353,6 +1507,7 @@ def build_agent_tools(
         materialize_duckdb_dataset,
         upsert_chart_widget,
         create_markdown_report_widget,
+        create_react_widget,
         create_single_filter_widget,
     ]
 

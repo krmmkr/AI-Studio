@@ -164,9 +164,18 @@ def register_repository(
         "ingested_commits": clone_result.get("ingested_commits", 0)
     }
 
+class SyncRepositoryRequest(BaseModel):
+    branch: str | None = None
+
+class CreateWorktreeRequest(BaseModel):
+    branch: str
+    base_branch: str = "main"
+
 @router.post("/repositories/{repo_id}/sync")
 def sync_repository(
     repo_id: int,
+    req: SyncRepositoryRequest | None = None,
+    branch: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -174,11 +183,14 @@ def sync_repository(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    target_branch = (req.branch if req else None) or branch or repo.default_branch
+
     try:
         sync_result = git_service.sync_repository(
             local_path=repo.local_path,
             default_branch=repo.default_branch,
-            remote_url=repo.remote_url
+            remote_url=repo.remote_url,
+            target_branch=target_branch,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -189,12 +201,44 @@ def sync_repository(
     db.commit()
 
     return {
-        "message": f"Repository '{repo.name}' synced successfully.",
+        "message": f"Repository '{repo.name}' synced successfully on branch '{repo.default_branch}'.",
+        "branch": repo.default_branch,
         "last_synced_at": repo.last_synced_at.isoformat(),
         "head_sha": sync_result.get("head_sha", ""),
         "commit_count": sync_result.get("commit_count", 0),
         "ingested_commits": sync_result.get("ingested_commits", 0)
     }
+
+@router.get("/repositories/{repo_id}/worktrees")
+def list_repository_worktrees(
+    repo_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    repo = db.query(LocalRepository).filter(LocalRepository.id == repo_id).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return git_service.list_worktrees(repo.local_path)
+
+@router.post("/repositories/{repo_id}/worktrees")
+def create_repository_worktree(
+    repo_id: int,
+    req: CreateWorktreeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    repo = db.query(LocalRepository).filter(LocalRepository.id == repo_id).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    try:
+        wt = git_service.create_worktree(
+            local_path_or_repo=repo.local_path,
+            new_branch=req.branch,
+            base_branch=req.base_branch or repo.default_branch,
+        )
+        return {"message": "Worktree created successfully", "worktree": wt}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.delete("/repositories/{repo_id}")
 def delete_repository(

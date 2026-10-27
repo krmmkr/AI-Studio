@@ -663,6 +663,10 @@ class DuckDBService:
                 meta_obj["approved_by"] = effective_lineage["approved_by"]
             if effective_lineage.get("approved_at"):
                 meta_obj["approved_at"] = effective_lineage["approved_at"]
+            if effective_lineage.get("refresh_recipe"):
+                meta_obj["refresh_recipe"] = effective_lineage["refresh_recipe"]
+            if effective_lineage.get("contract_schema"):
+                meta_obj["contract_schema"] = effective_lineage["contract_schema"]
             self.dataset_lineage[safe_name] = meta_obj
             meta_path = ds_dir / f"{safe_name}.meta.json"
             meta_path.write_text(json.dumps(meta_obj, indent=2), encoding="utf-8")
@@ -682,6 +686,20 @@ class DuckDBService:
         except Exception as e:
             logger.error(f"Failed to materialize dataset {safe_name}: {e}")
             return {"status": "error", "error": str(e)}
+
+    def get_dataset_recipe(self, table_name: str) -> dict[str, Any] | None:
+        """Retrieves the declarative generation recipe for an agent-derived dataset if available."""
+        from pathlib import Path
+        import json
+        ds_dir = Path(__file__).resolve().parent.parent.parent.parent / "local_data" / "derived_datasets"
+        meta_path = ds_dir / f"{table_name.lower().strip()}.meta.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                return meta.get("refresh_recipe")
+            except Exception:
+                pass
+        return None
 
     def import_file_dataset(self, filename: str, file_bytes: bytes, table_name: str | None = None) -> dict[str, Any]:
         """

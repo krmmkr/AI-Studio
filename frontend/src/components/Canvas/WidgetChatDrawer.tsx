@@ -92,11 +92,11 @@ export const WidgetChatDrawer: React.FC<WidgetChatDrawerProps> = ({
 
   const currentPersona = personas.find((p) => p.id === selectedAgentId) || personas[0];
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isStreaming) return;
+  const handleSend = async (e?: React.FormEvent, customText?: string) => {
+    e?.preventDefault();
+    const userText = (customText || input).trim();
+    if (!userText || isStreaming) return;
 
-    const userText = input.trim();
     setInput('');
     const userMsg: ChatMessage = {
       id: Date.now(),
@@ -293,6 +293,7 @@ export const WidgetChatDrawer: React.FC<WidgetChatDrawerProps> = ({
               key={m.id || idx}
               message={m}
               isStreaming={isStreaming && idx === messages.length - 1 && m.role === 'assistant'}
+              onSelectSuggestion={(suggestion) => handleSend(undefined, suggestion)}
             />
           ))
         )}

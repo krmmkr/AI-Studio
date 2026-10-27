@@ -1165,6 +1165,7 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                       onAddCommentReply={handleAddCommentReply}
                       onDeleteComment={handleDeleteComment}
                       onTriggerAgentWithComment={handleTriggerAgentWithComment}
+                      onOpenCopilot={onOpenDashboardCopilot}
                       dashboardId={activeDashboardId}
                       activePinId={activePinId}
                       onSetActivePinId={setActivePinId}
@@ -1237,42 +1238,17 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             </div>
 
             <p className="text-xs text-m3-on-surface-variant mb-3">
-              Leave a note, team question, or an instruction for the Copilot (e.g. <span className="text-m3-primary font-mono">@agent generate commit churn chart</span>).
+              Leave a note, team question, or an instruction for the Copilot.
             </p>
 
             <textarea
               value={newPinContent}
               onChange={(e) => setNewPinContent(e.target.value)}
-              placeholder="e.g. @agent create a commit churn breakdown for hog, or add a 30-day filter..."
+              placeholder="Write your note or instructions for the agent..."
               rows={3}
               className="w-full text-xs p-3 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/30 text-m3-on-surface placeholder:text-m3-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-m3-primary resize-none mb-3"
               autoFocus
             />
-
-            {/* Quick Suggestion Chips */}
-            <div className="flex flex-wrap gap-1.5 mb-4">
-              <button
-                type="button"
-                onClick={() => setNewPinContent('@agent generate a commit churn chart for this repository')}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-primary font-medium transition-colors"
-              >
-                + @agent commit churn chart
-              </button>
-              <button
-                type="button"
-                onClick={() => setNewPinContent('@agent query DuckDB table and visualize summary metrics')}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-primary font-medium transition-colors"
-              >
-                + @agent query DuckDB
-              </button>
-              <button
-                type="button"
-                onClick={() => setNewPinContent('@agent create an ECharts bar chart for top authors')}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-primary font-medium transition-colors"
-              >
-                + @agent bar chart
-              </button>
-            </div>
 
             <div className="flex items-center justify-end gap-2">
               <button

@@ -43,7 +43,7 @@ def is_safe_mcp_url(url: str) -> tuple[bool, str]:
 
 class MCPClientManager:
     """
-    Manages connections, discovery, and tool execution across MCP Streamable HTTP (FastMCP / Superset 7.0),
+    Manages connections, discovery, and tool execution across MCP Streamable HTTP (FastMCP / Remote MCP),
     JSON-RPC HTTP, and SSE Model Context Protocol endpoints.
     """
 
@@ -100,9 +100,9 @@ class MCPClientManager:
     @classmethod
     def _build_auth_header_variants(cls, auth_header: str | None) -> list[dict[str, str]]:
         """
-        Builds ordered authentication header variants so raw tokens (e.g., Superset 7.0 `sst_...`
-        API keys, GitHub `ghp_...` PATs, or JWTs) work automatically whether the user typed
-        `sst_xxx` or `Bearer sst_xxx`.
+        Builds ordered authentication header variants so raw tokens (e.g., FastMCP API keys,
+        GitHub `ghp_...` PATs, or JWTs) work automatically whether the user typed
+        a raw key or `Bearer ...`.
         """
         if not auth_header or not auth_header.strip():
             return [{}]
@@ -113,7 +113,7 @@ class MCPClientManager:
             return [{}]
 
         variants: list[dict[str, str]] = [
-            # 1. Standard Bearer + X-API-Key (Superset 7.0 API Keys & FastMCP BearerAuth)
+            # 1. Standard Bearer + X-API-Key (API Keys & FastMCP BearerAuth)
             {
                 "Authorization": f"Bearer {raw_token}",
                 "X-API-Key": raw_token,
@@ -161,14 +161,14 @@ class MCPClientManager:
         """
         Probes an MCP server using the official MCP Streamable HTTP protocol:
         1. POST initialize (JSON-RPC 2.0) with Accept: application/json, text/event-stream
-        2. Automatically negotiates Bearer / Api-Key / X-API-Key headers for Superset 7.0 `sst_` keys
+        2. Automatically negotiates Bearer / Api-Key / X-API-Key headers for streamable HTTP keys
         3. Capture Mcp-Session-Id header if stateful
         4. POST notifications/initialized + tools/list to discover live tools
         """
         common_headers: dict[str, str] = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "User-Agent": "Antigravity-Cockpit/1.0",
+            "User-Agent": "AI-Studio/1.0",
         }
         auth_variants = self._build_auth_header_variants(auth_header)
         raw_token = self._extract_raw_token(auth_header)
@@ -302,7 +302,7 @@ class MCPClientManager:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             try:
                 # 1. Always try MCP Streamable HTTP (POST initialize + tools/list) first!
-                # Superset 7.0 / FastMCP servers use StreamableHTTP at /mcp and reject GET requests with 404/405.
+                # StreamableHTTP / FastMCP servers use endpoint at /mcp and reject GET requests with 404/405.
                 streamable_res = await self._probe_streamable_http(client, url, auth_header=auth_header)
                 if streamable_res is not None:
                     return streamable_res
@@ -311,7 +311,7 @@ class MCPClientManager:
                 jsonrpc_headers = {
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/event-stream",
-                    "User-Agent": "Antigravity-Cockpit/1.0",
+                    "User-Agent": "AI-Studio/1.0",
                     **self._default_auth_headers(auth_header),
                 }
 
@@ -339,7 +339,7 @@ class MCPClientManager:
                 # 3. Fallback: Try SSE stream or REST GET endpoints (/sse, /tools, /list_tools, root)
                 headers = {
                     "Accept": "text/event-stream, application/json",
-                    "User-Agent": "Antigravity-Cockpit/1.0",
+                    "User-Agent": "AI-Studio/1.0",
                     **self._default_auth_headers(auth_header),
                 }
 
@@ -394,7 +394,7 @@ class MCPClientManager:
     async def list_tools_for_configs(self, configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Collects advertised tools across all active global and user-level MCP configs.
-        Queries live MCP endpoints (including Superset 7.0 StreamableHTTP) first, and falls back
+        Queries live MCP endpoints (including StreamableHTTP / FastMCP) first, and falls back
         to built-in tool descriptors when a local dev server is offline.
         """
         tools: list[dict[str, Any]] = []
@@ -471,7 +471,7 @@ class MCPClientManager:
                         {
                             "mcp_name": name,
                             "name": "superset_query_dataset",
-                            "description": "Execute headless BI SQL or slice query on Superset 7.0 and retrieve tabular records.",
+                            "description": "Execute headless BI SQL or slice query on remote MCP and retrieve tabular records.",
                             "parameters": {"dataset_id": "integer", "metrics": "array", "dimensions": "array"},
                         },
                         {
@@ -509,7 +509,7 @@ class MCPClientManager:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "User-Agent": "Antigravity-Cockpit/1.0",
+            "User-Agent": "AI-Studio/1.0",
             **self._default_auth_headers(auth_header),
         }
 
@@ -582,7 +582,7 @@ class MCPClientManager:
                 "dataset": "analytics.customer_transactions_daily",
                 "rows_returned": 8,
                 "status": "success",
-                "source": "Superset 7.0 Headless BI MCP",
+                "source": "Streamable HTTP MCP",
             }
         elif "pr" in tool_name.lower() or "github" in tool_name.lower():
             return {

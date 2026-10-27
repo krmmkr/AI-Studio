@@ -9,6 +9,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 LOCAL_DATA_DIR = BASE_DIR / "local_data"
 STORAGE_DIR = LOCAL_DATA_DIR / "storage"
 REPOS_DIR = LOCAL_DATA_DIR / "repos"
+DERIVED_DATASETS_DIR = LOCAL_DATA_DIR / "derived_datasets"
+SESSIONS_ROOT_DIR = LOCAL_DATA_DIR / "agent_sessions"
+ANTIGRAVITY_APP_DATA = LOCAL_DATA_DIR / "antigravity_app_data"
 STATIC_DIR = BASE_DIR / "backend" / "app" / "static"
 
 # Load .env file from project root if present
@@ -16,11 +19,13 @@ ENV_PATH = BASE_DIR / ".env"
 if ENV_PATH.exists():
     load_dotenv(dotenv_path=ENV_PATH)
 
-# Ensure local directories exist
-LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
-STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-REPOS_DIR.mkdir(parents=True, exist_ok=True)
-STATIC_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure local directories exist with open permissions
+for _dir in (LOCAL_DATA_DIR, STORAGE_DIR, REPOS_DIR, DERIVED_DATASETS_DIR, SESSIONS_ROOT_DIR, ANTIGRAVITY_APP_DATA, STATIC_DIR):
+    _dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(_dir, 0o777)
+    except Exception:
+        pass
 
 # Environment: 'development', 'testing', 'production'
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").lower()
@@ -37,10 +42,70 @@ if venv_bin not in os.environ.get("PATH", ""):
     os.environ["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
 
 
+def find_opencode_binary() -> str | None:
+    """Finds opencode binary dynamically across virtualenv, PATH, and base directories."""
+    import shutil
+    import sys
+    venv_candidate = Path(sys.prefix) / "bin" / "opencode"
+    if venv_candidate.is_file() and os.access(venv_candidate, os.X_OK):
+        return str(venv_candidate)
+    local_candidate = BASE_DIR / ".venv" / "bin" / "opencode"
+    if local_candidate.is_file() and os.access(local_candidate, os.X_OK):
+        return str(local_candidate)
+    found = shutil.which("opencode")
+    if found:
+        return found
+    return None
+
+
+def normalize_database_url(url: str, base_dir: Path) -> str:
+    """
+    Normalizes database URLs, with special handling for SQLite to prevent path resolution
+    and permission issues in both local development and Docker containers.
+    - Normalizes SQLite relative/absolute paths across Docker (/app) and local development.
+    - Converts 3-slash URLs pointing to 'app/...' to absolute 4-slash '/app/...' paths.
+    - Automatically creates the parent directory of any SQLite file before connection.
+    """
+    if not url or not url.startswith("sqlite:"):
+        return url
+    try:
+        from sqlalchemy.engine.url import make_url
+        parsed = make_url(url)
+        db_file = parsed.database
+        if not db_file or db_file == ":memory:":
+            return url
+        file_path = Path(db_file)
+        # Handle Docker container paths where WORKDIR is /app
+        if str(db_file).startswith("app/"):
+            if Path("/app").exists() or str(base_dir) == "/app":
+                resolved = Path("/") / db_file
+            else:
+                resolved = (base_dir / str(db_file)[4:]).resolve()
+        elif not file_path.is_absolute():
+            resolved = (base_dir / file_path).resolve()
+        else:
+            resolved = file_path.resolve()
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(resolved.parent, 0o777)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return f"sqlite:///{resolved}"
+    except Exception as e:
+        logger.warning(f"Could not normalize database URL '{url}': {e}")
+        return url
+
+
 # Database URL
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    f"sqlite:///{LOCAL_DATA_DIR / 'cockpit.db'}"
+DATABASE_URL = normalize_database_url(
+    os.environ.get(
+        "DATABASE_URL",
+        f"sqlite:///{LOCAL_DATA_DIR / 'cockpit.db'}"
+    ),
+    BASE_DIR
 )
 
 # JWT Secret & Auth Settings

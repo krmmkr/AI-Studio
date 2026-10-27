@@ -4,7 +4,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from backend.app.config import STATIC_DIR, CORS_ALLOWED_ORIGINS, ENVIRONMENT
+from backend.app.config import (
+    STATIC_DIR,
+    CORS_ALLOWED_ORIGINS,
+    ENVIRONMENT,
+    LOCAL_DATA_DIR,
+    STORAGE_DIR,
+    REPOS_DIR,
+    DERIVED_DATASETS_DIR,
+    SESSIONS_ROOT_DIR,
+    ANTIGRAVITY_APP_DATA,
+)
 from backend.app.database import engine, Base, SessionLocal, check_db_connection, ensure_db_schema
 from backend.app.services.seed_data import seed_database
 from backend.app.routers import (
@@ -19,6 +29,25 @@ from backend.app.routers import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Ensure local directory structure exists and has open write permissions
+    import os
+    for _d in (LOCAL_DATA_DIR, STORAGE_DIR, REPOS_DIR, DERIVED_DATASETS_DIR, SESSIONS_ROOT_DIR, ANTIGRAVITY_APP_DATA, STATIC_DIR):
+        _d.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(_d, 0o777)
+        except Exception:
+            pass
+
+    # Ensure DB file and WAL journal files are writable if they already exist
+    db_file = LOCAL_DATA_DIR / "cockpit.db"
+    if db_file.exists():
+        for _f in (db_file, LOCAL_DATA_DIR / "cockpit.db-wal", LOCAL_DATA_DIR / "cockpit.db-shm"):
+            if _f.exists():
+                try:
+                    os.chmod(_f, 0o666)
+                except Exception:
+                    pass
+
     # Startup: ensure tables and seed database
     Base.metadata.create_all(bind=engine)
     ensure_db_schema()
@@ -36,8 +65,8 @@ async def lifespan(app: FastAPI):
         pass
 
 app = FastAPI(
-    title="Antigravity Cockpit API",
-    description="Agentic Chat & Dynamic Dashboard Studio powered by Google Antigravity & Model Context Protocol",
+    title="AI Studio API",
+    description="Agentic Chat & Dynamic Dashboard Studio powered by AI Studio & Model Context Protocol",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -64,7 +93,7 @@ app.include_router(agent_routes.router)
 @app.get("/healthz")
 async def health_check():
     """Liveness probe: verifies the web service process is active."""
-    return {"status": "ok", "service": "Antigravity Cockpit", "environment": ENVIRONMENT}
+    return {"status": "ok", "service": "AI Studio", "environment": ENVIRONMENT}
 
 @app.get("/readyz")
 async def readiness_check():
@@ -94,7 +123,7 @@ async def serve_spa(full_path: str):
     if index_file.exists():
         return FileResponse(index_file)
     return {
-        "status": "Antigravity Cockpit Backend Active",
+        "status": "AI Studio Backend Active",
         "docs": "/docs",
         "note": "React frontend is building or being served in dev mode."
     }

@@ -1,7 +1,7 @@
 import logging
 import os
 from typing import AsyncGenerator, Any
-from backend.app.config import GEMINI_API_KEY, LLM_PROVIDER, ANTIGRAVITY_API_KEY, ANTIGRAVITY_BASE_URL, OPENAI_API_KEY
+from backend.app.config import GEMINI_API_KEY, LLM_PROVIDER, ANTIGRAVITY_API_KEY, ANTIGRAVITY_BASE_URL, OPENAI_API_KEY, find_opencode_binary
 from backend.app.models import MCPConfig
 from backend.app.services.agents.execution_manager import ExecutionContext
 from backend.app.services.agents.antigravity_runner import stream_with_antigravity_sdk
@@ -65,21 +65,26 @@ class AntigravityAgentService:
         ).strip().lower()
 
         if active_provider == "opencode":
-            async for event in stream_with_opencode_sdk(
-                user_message=user_message,
-                session_id=session_id,
-                current_dashboard_id=current_dashboard_id,
-                agent_id=agent_id,
-                history=history,
-                scope=scope,
-                pin_id=pin_id,
-                widget_id=widget_id,
-                execution_ctx=execution_ctx,
-                parent_context=parent_context,
-                parent_session_id=parent_session_id,
-            ):
-                yield event
-            return
+            has_opencode = bool(find_opencode_binary())
+            if not has_opencode:
+                logger.info("OpenCode requested but binary not found on system; seamlessly defaulting to Antigravity SDK.")
+                active_provider = "antigravity"
+            else:
+                async for event in stream_with_opencode_sdk(
+                    user_message=user_message,
+                    session_id=session_id,
+                    current_dashboard_id=current_dashboard_id,
+                    agent_id=agent_id,
+                    history=history,
+                    scope=scope,
+                    pin_id=pin_id,
+                    widget_id=widget_id,
+                    execution_ctx=execution_ctx,
+                    parent_context=parent_context,
+                    parent_session_id=parent_session_id,
+                ):
+                    yield event
+                return
 
         api_key = self._resolve_api_key()
         try:

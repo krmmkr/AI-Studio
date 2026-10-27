@@ -16,6 +16,7 @@ import {
   Bot,
   AlertTriangle,
   Square,
+  GitBranch,
 } from 'lucide-react';
 
 interface DashboardCopilotDrawerProps {
@@ -124,6 +125,42 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+
+  useEffect(() => {
+    chatApi
+      .getRuntimeInfo()
+      .then((info) => {
+        if (info?.default_provider) {
+          setSelectedProvider(info.default_provider);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 140)}px`;
+    }
+  }, [inputPrompt]);
+
+  const handleForkSession = async (messageId?: number) => {
+    if (!activeSessionId || isStreaming || !dashboardId) return;
+    try {
+      const parentSession = sessions.find((s) => s.id === activeSessionId);
+      const title = parentSession ? `Branch of ${parentSession.title.slice(0, 24)}` : 'Branched Thread';
+      const forkedSession = await chatApi.forkSession(activeSessionId, {
+        message_id: messageId,
+        title,
+      });
+      await loadDashboardSessions(forkedSession.id);
+    } catch (e: any) {
+      console.error('Failed to fork copilot session:', e);
+      alert(e.message || 'Failed to fork conversation branch');
+    }
+  };
 
   const handleStopExecution = async () => {
     if (abortControllerRef.current) {
@@ -201,6 +238,9 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
       setMessages([]);
       setActiveThoughts([]);
       setInputPrompt('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
       setChatDropdownOpen(false);
     } catch (e) {
       console.error('Failed to create new copilot chat:', e);
@@ -235,6 +275,9 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
     if (!text || isStreaming || !activeSessionId) return;
 
     setInputPrompt('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
     const userMsg: ChatMessage = {
       id: Date.now(),
       role: 'user',
@@ -376,7 +419,9 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
         },
       },
       {
-        agentId: selectedAgentId,
+        agentId: selectedAgentId !== 'general' ? selectedAgentId : undefined,
+        provider: selectedProvider || undefined,
+        parentSessionId: currentSession?.parent_session_id || undefined,
         signal: controller.signal,
       }
     );
@@ -388,12 +433,6 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
     if (id === 'superset-agent') return <BarChart3 className="w-3.5 h-3.5 text-emerald-500" />;
     return <Code2 className="w-3.5 h-3.5 text-m3-secondary" />;
   };
-
-  const samplePrompts = [
-    'Analyze cloned repositories and chart top contributors by commits',
-    'Create a commit velocity and conventional commit breakdown chart',
-    'Generate an engineering repository report card on this canvas',
-  ];
 
   return (
     <div className="fixed inset-y-0 right-0 z-[60] w-full sm:w-[460px] bg-m3-surface border-l border-m3-outline-variant/30 shadow-2xl flex flex-col animate-slideLeft transition-colors">
@@ -481,6 +520,33 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
             )}
           </div>
 
+          {/* Branched Session Indicator */}
+          {currentSession?.parent_session_id && (
+            <button
+              type="button"
+              onClick={() => handleSelectSession(currentSession.parent_session_id!)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium bg-m3-primary/10 text-m3-primary hover:bg-m3-primary/20 transition-colors cursor-pointer"
+              title={`Branched from: ${currentSession.parent_title || 'parent thread'}`}
+            >
+              <GitBranch className="w-3 h-3 shrink-0" />
+              <span className="truncate max-w-[80px]">{currentSession.parent_title || 'parent'}</span>
+            </button>
+          )}
+
+          {/* Fork Chat Button */}
+          {activeSessionId && messages.length > 0 && (
+            <button
+              type="button"
+              onClick={() => handleForkSession()}
+              disabled={isStreaming}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-on-surface border border-m3-outline-variant/30 shadow-2xs transition-all disabled:opacity-50 cursor-pointer"
+              title="Branch this conversation into a new isolated thread"
+            >
+              <GitBranch className="w-3 h-3 text-m3-primary" />
+              <span>Fork</span>
+            </button>
+          )}
+
           <button
             onClick={onClose}
             className="p-1.5 rounded-full hover:bg-m3-surface-container-high text-m3-on-surface-variant transition-colors"
@@ -556,7 +622,7 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
       </div>
 
       {/* Messages */}
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4 min-w-0 w-full">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 text-center text-m3-on-surface-variant p-4">
             <div className="w-10 h-10 rounded-2xl bg-m3-surface-container-highest flex items-center justify-center text-m3-primary mb-3">
@@ -565,22 +631,23 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
             <p className="text-xs font-semibold text-m3-on-surface mb-1">
               Fresh Chat Session Active
             </p>
-            <p className="text-[11px] max-w-xs leading-relaxed text-m3-on-surface-variant mb-4">
-              Ask {currentPersona.name} to generate analytical charts, code health audits, or query
-              datasets.
+            <p className="text-[11px] max-w-xs leading-relaxed text-m3-on-surface-variant mb-2">
+              Ask {currentPersona.name} to analyze repositories, explore codebase metrics, or mount canvas charts.
             </p>
-
-            <div className="w-full space-y-2">
-              <span className="text-[10px] uppercase font-bold tracking-wider text-m3-on-surface-variant/70">
-                Quick Prompts:
-              </span>
-              {samplePrompts.map((prompt, i) => (
+            <div className="flex flex-wrap gap-1.5 justify-center max-w-xs mt-1">
+              {[
+                'Compare commit trends',
+                'Top contributor breakdown',
+                'Recent PRs & bugfixes',
+                'Mount code churn chart',
+              ].map((suggestion) => (
                 <button
-                  key={i}
-                  onClick={() => handleSend(prompt)}
-                  className="w-full p-2.5 rounded-2xl bg-m3-surface-container-low hover:bg-m3-surface-container text-left text-xs text-m3-on-surface transition-colors border border-m3-outline-variant/20 block"
+                  key={suggestion}
+                  type="button"
+                  onClick={() => handleSend(suggestion)}
+                  className="px-2.5 py-1 rounded-full text-[10px] font-medium bg-m3-surface-container-high hover:bg-m3-primary/15 hover:text-m3-primary text-m3-on-surface border border-m3-outline-variant/30 transition-colors cursor-pointer"
                 >
-                  {prompt}
+                  {suggestion}
                 </button>
               ))}
             </div>
@@ -609,6 +676,7 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
                       }
                     : undefined
                 }
+                onForkAtMessage={(mid) => handleForkSession(mid)}
                 onMountToCanvas={(spec, title) =>
                   onCanvasAction({
                     action: 'create_widget',
@@ -629,28 +697,35 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <div className="p-3 border-t border-m3-outline-variant/20 bg-m3-surface-container-low">
+      {/* Input Form with Auto-Resizing Textarea and Enter/Shift+Enter Support */}
+      <div className="p-3 border-t border-m3-outline-variant/20 bg-m3-surface-container-low shrink-0">
         <form
           onSubmit={(e) => {
             e.preventDefault();
             handleSend();
           }}
-          className="flex items-center gap-2 bg-m3-surface-container-lowest rounded-full pl-4 pr-1.5 py-1.5 border border-m3-outline-variant/40 focus-within:border-m3-primary shadow-xs"
+          className="flex items-end gap-2 bg-m3-surface-container-lowest rounded-2xl pl-3.5 pr-2 py-2 border border-m3-outline-variant/40 focus-within:border-m3-primary shadow-xs transition-all"
         >
-          <input
-            type="text"
+          <textarea
+            ref={textareaRef}
             value={inputPrompt}
             onChange={(e) => setInputPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
             disabled={isStreaming}
-            placeholder={`Ask ${currentPersona.name.split(' ')[0]}...`}
-            className="flex-1 bg-transparent border-none outline-none text-xs text-m3-on-surface placeholder:text-m3-on-surface-variant/70"
+            placeholder={`Ask ${currentPersona.name.split(' ')[0]}... (Enter to send, Shift+Enter for newline)`}
+            rows={1}
+            className="flex-1 bg-transparent border-none outline-none text-xs text-m3-on-surface placeholder:text-m3-on-surface-variant/70 resize-none max-h-36 py-1 leading-relaxed"
           />
           {isStreaming ? (
             <button
               type="button"
               onClick={handleStopExecution}
-              className="inline-flex items-center gap-1 px-3 h-8 rounded-full bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-xs transition-colors"
+              className="inline-flex items-center gap-1 px-3 h-8 rounded-full bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-xs transition-colors shrink-0 mb-0.5 cursor-pointer"
               title="Stop execution"
             >
               <Square className="w-3 h-3 fill-current" />
@@ -660,7 +735,7 @@ export const DashboardCopilotDrawer: React.FC<DashboardCopilotDrawerProps> = ({
             <button
               type="submit"
               disabled={!inputPrompt.trim()}
-              className="w-8 h-8 rounded-full bg-m3-primary text-m3-on-primary flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity shadow-xs"
+              className="w-8 h-8 rounded-full bg-m3-primary text-m3-on-primary flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity shadow-xs shrink-0 mb-0.5 cursor-pointer"
             >
               <Send className="w-3.5 h-3.5" />
             </button>

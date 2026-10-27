@@ -53,7 +53,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
-  Plus,
   MoreHorizontal,
   Code2,
   Table as TableIcon,
@@ -69,6 +68,9 @@ import {
   ListFilter,
   SlidersHorizontal,
   ToggleLeft,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 const renderInlineWidgetMarkdown = (text: string): React.ReactNode[] => {
@@ -751,6 +753,7 @@ interface WidgetCardProps {
   onCanvasAction?: (action: any) => void;
   allWidgets?: DashboardWidget[];
   onMenuToggle?: (isOpen: boolean) => void;
+  onOpenCopilot?: (initialPrompt?: string) => void;
 }
 
 export const WidgetCard: React.FC<WidgetCardProps> = ({
@@ -762,6 +765,7 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({
   onRefresh,
   onExpand,
   onUpdateWidgetSpec,
+  onOpenCopilot,
   availableRepos = [],
   onUpdateWidgetSources,
   filters,
@@ -795,6 +799,11 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({
   const [internalActivePinId, setInternalActivePinId] = useState<number | null>(null);
   const [checkboxSearch, setCheckboxSearch] = useState('');
   const [editChartModalOpen, setEditChartModalOpen] = useState(false);
+  const [aiEditPrompt, setAiEditPrompt] = useState('');
+  const [aiMetricDraft, setAiMetricDraft] = useState('');
+  const [aiDimensionDraft, setAiDimensionDraft] = useState('');
+  const [aiSplitByDraft, setAiSplitByDraft] = useState('');
+  const [showAdvancedEditFields, setShowAdvancedEditFields] = useState(false);
 
   const closeActionsMenu = () => {
     setActionsMenuOpen(false);
@@ -1541,18 +1550,16 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({
                   </button>
                 )}
 
-                {(widget.widget_type === 'echarts' || widget.widget_type === 'table') && (
-                  <button
-                    onClick={() => {
-                      closeActionsMenu();
-                      setEditChartModalOpen(true);
-                    }}
-                    className="flex items-center gap-2.5 px-3 py-2 text-xs text-m3-on-surface hover:bg-m3-surface-container-high rounded-xl transition-colors text-left cursor-pointer font-medium"
-                  >
-                    <Settings2 className="w-3.5 h-3.5 text-m3-primary shrink-0" />
-                    <span>Edit Chart & Axes</span>
-                  </button>
-                )}
+                <button
+                  onClick={() => {
+                    closeActionsMenu();
+                    setEditChartModalOpen(true);
+                  }}
+                  className="flex items-center gap-2.5 px-3 py-2 text-xs text-m3-on-surface hover:bg-m3-surface-container-high rounded-xl transition-colors text-left cursor-pointer font-medium"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-m3-primary shrink-0" />
+                  <span>Edit Widget</span>
+                </button>
 
                 <button
                   onClick={() => {
@@ -2112,7 +2119,9 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({
             <ReactAppWidget
               title={widget.title}
               spec={effectiveSpec}
+              data={filteredTableRows.length > 0 ? filteredTableRows : widget.spec?.data || widget.spec?.rows}
               filters={scopedFilters}
+              onUpdateSpec={(nextSpec) => onUpdateWidgetSpec?.(widget.id, nextSpec)}
             />
           </ErrorBoundary>
         ) : widget.widget_type === 'echarts' ? (
@@ -2414,7 +2423,7 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({
         document.body
       )}
 
-      {/* Safe Chart Axes, Multi-Metric Series & Labels Editor Modal */}
+      {/* 100% AI-Driven Widget Editor Modal */}
       {editChartModalOpen &&
         typeof document !== 'undefined' &&
         createPortal(
@@ -2423,613 +2432,189 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({
             className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fadeIn"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="bg-m3-surface rounded-3xl max-w-xl w-full p-5 shadow-2xl border border-m3-outline-variant/30 flex flex-col gap-3 max-h-[88vh] overflow-y-auto text-xs z-[10000]">
-            <div className="flex items-center justify-between pb-2.5 border-b border-m3-outline-variant/20">
-              <div className="flex items-center gap-2">
-                <Settings2 className="w-4 h-4 text-m3-primary" />
-                <h3 className="text-sm font-bold text-m3-on-surface">
-                  Edit Axes, Series & Metrics — {widget.title}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEditChartModalOpen(false)}
-                className="p-1 rounded-full hover:bg-m3-surface-container-high text-m3-on-surface-variant cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Title & Subtitle Editor */}
-            <div className="p-3 rounded-2xl bg-m3-surface-container-low/60 border border-m3-outline-variant/25 flex flex-col gap-2">
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block font-semibold text-m3-on-surface mb-1">
-                    Widget Title
-                  </label>
-                  <input
-                    type="text"
-                    value={widgetTitleDraft}
-                    onChange={(e) => {
-                      const nextTitle = e.target.value;
-                      setWidgetTitleDraft(nextTitle);
-                      if (nextTitle.trim()) {
-                        onCanvasAction?.({
-                          action: 'update_widget',
-                          widget: { ...widget, title: nextTitle.trim() },
-                        });
-                      }
-                    }}
-                    placeholder="Widget Title"
-                    className="w-full px-3 py-1.5 rounded-xl bg-m3-surface border border-m3-outline-variant/40 text-m3-on-surface text-xs"
-                  />
+            <div className="bg-m3-surface rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-m3-outline-variant/30 flex flex-col gap-4 text-xs z-[10000]">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-m3-outline-variant/20">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-m3-primary/10 flex items-center justify-center text-m3-primary">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-m3-on-surface">Edit Widget</h3>
+                    <p className="text-[11px] text-m3-on-surface-variant truncate max-w-xs">{widget.title}</p>
+                  </div>
                 </div>
-                <div>
-                  <label className="block font-semibold text-m3-on-surface mb-1">
-                    Chart Subtitle / Horizon
-                  </label>
-                  <input
-                    type="text"
-                    value={widget.spec?.title?.subtext || ''}
-                    onChange={(e) => {
-                      const nextSub = e.target.value;
-                      const nextSpec = {
-                        ...(widget.spec || {}),
-                        title: { ...(widget.spec?.title || {}), subtext: nextSub },
-                      };
-                      onUpdateWidgetSpec?.(widget.id, nextSpec);
-                    }}
-                    placeholder="Subtitle (Optional)"
-                    className="w-full px-3 py-1.5 rounded-xl bg-m3-surface border border-m3-outline-variant/40 text-m3-on-surface text-xs"
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditChartModalOpen(false)}
+                  className="p-1.5 rounded-full hover:bg-m3-surface-container-high text-m3-on-surface-variant cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
 
-              {widget.widget_type === 'echarts' && (
-                <label className="flex items-center gap-2 text-[11px] text-m3-on-surface-variant cursor-pointer pt-1 border-t border-m3-outline-variant/15">
-                  <input
-                    type="checkbox"
-                    checked={widget.spec?.show_inner_title === true}
-                    onChange={(e) => {
-                      const nextSpec = {
-                        ...(widget.spec || {}),
-                        show_inner_title: e.target.checked,
-                      };
-                      onUpdateWidgetSpec?.(widget.id, nextSpec);
-                    }}
-                    className="w-3.5 h-3.5 accent-m3-primary rounded cursor-pointer"
-                  />
-                  <span>Display title inside chart canvas (default is hidden to avoid duplicate titles)</span>
+              {/* Title quick edit */}
+              <div>
+                <label className="block font-semibold text-m3-on-surface mb-1 text-[11px]">
+                  Widget Title
                 </label>
-              )}
-            </div>
-
-            {widget.widget_type === 'table' ? (
-              <div className="flex flex-col gap-3">
-                <div>
-                  <label className="block font-semibold text-m3-on-surface mb-1">
-                    Table Layout Mode
-                  </label>
-                  <select
-                    value={widget.spec?.table_mode || 'standard'}
-                    onChange={(e) => {
-                      const nextMode = e.target.value;
-                      onUpdateWidgetSpec?.(widget.id, {
-                        ...widget.spec,
-                        table_mode: nextMode,
-                        enable_rowspan: nextMode === 'rowspan' || nextMode === 'pivot',
+                <input
+                  type="text"
+                  value={widgetTitleDraft}
+                  onChange={(e) => {
+                    const nextTitle = e.target.value;
+                    setWidgetTitleDraft(nextTitle);
+                    if (nextTitle.trim()) {
+                      onCanvasAction?.({
+                        action: 'update_widget',
+                        widget: { ...widget, title: nextTitle.trim() },
                       });
-                    }}
-                    className="w-full px-3 py-2 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-xs text-m3-on-surface cursor-pointer"
-                  >
-                    <option value="standard">Standard Table (No Rowspan)</option>
-                    <option value="rowspan">Grouped Table (With Vertical Rowspan)</option>
-                    <option value="pivot">Pivot Table (Cross-Tab Matrix with Rowspan & Totals)</option>
-                  </select>
-                </div>
+                    }
+                  }}
+                  placeholder="Widget Title"
+                  className="w-full px-3.5 py-2 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-m3-on-surface text-xs focus:outline-none focus:ring-1 focus:ring-m3-primary"
+                />
               </div>
-            ) : (
-              (() => {
-                const curSpec = widget.spec || {};
-                const xAx = Array.isArray(curSpec.xAxis) ? curSpec.xAxis[0] : curSpec.xAxis;
-                const yAxList = Array.isArray(curSpec.yAxis)
-                  ? curSpec.yAxis
-                  : curSpec.yAxis
-                  ? [curSpec.yAxis]
-                  : [{ type: 'value', name: '' }];
-                const curSeries: any[] = Array.isArray(curSpec.series) ? curSpec.series : [];
-                const labelsShown = curSeries.some((s) => s?.label?.show === true);
 
-                const updateSpecPatch = (updater: (cloned: Record<string, any>) => void) => {
-                  const cloned = JSON.parse(JSON.stringify(curSpec));
-                  updater(cloned);
-                  onUpdateWidgetSpec?.(widget.id, cloned);
-                };
-
-                const switchVisualArchetype = (targetMode: 'bar' | 'horizontal_bar' | 'stacked_bar' | 'line' | 'area' | 'pie' | 'scatter') => {
-                  updateSpecPatch((c) => {
-                    const xObj = Array.isArray(c.xAxis) ? c.xAxis[0] : c.xAxis;
-                    const yObj = Array.isArray(c.yAxis) ? c.yAxis[0] : c.yAxis;
-                    const seriesArr: any[] = Array.isArray(c.series) ? c.series : [];
-                    if (seriesArr.length === 0) return;
-
-                    // Extract categories from xAxis, yAxis, _savedCategories, or pie data
-                    let cats: string[] = [];
-                    if (Array.isArray(xObj?.data) && xObj.data.length > 0) {
-                      cats = xObj.data.map(String);
-                    } else if (Array.isArray(yObj?.data) && yObj.data.length > 0) {
-                      cats = yObj.data.map(String);
-                    } else if (Array.isArray(c._savedCategories) && c._savedCategories.length > 0) {
-                      cats = c._savedCategories.map(String);
-                    } else if (seriesArr[0]?.type === 'pie' && Array.isArray(seriesArr[0]?.data)) {
-                      cats = seriesArr[0].data.map((d: any, i: number) => String(d?.name ?? `Item ${i + 1}`));
-                    }
-
-                    // Normalize series numeric values
-                    const normalizeValues = (s: any): number[] => {
-                      if (!Array.isArray(s?.data)) return [];
-                      return s.data.map((d: any) =>
-                        typeof d === 'number'
-                          ? d
-                          : d && typeof d === 'object' && typeof d.value === 'number'
-                          ? d.value
-                          : Number(d) || 0
-                      );
-                    };
-
-                    if (targetMode === 'pie') {
-                      c._savedCategories = cats;
-                      const vals = normalizeValues(seriesArr[0]);
-                      c.xAxis = { show: false, type: 'category', data: cats };
-                      c.yAxis = { show: false, type: 'value' };
-                      c.tooltip = { trigger: 'item' };
-                      c.series = [
-                        {
-                          name: seriesArr[0]?.name || widget.title,
-                          type: 'pie',
-                          radius: ['40%', '70%'],
-                          data: cats.map((name, idx) => ({ name, value: vals[idx] ?? 0 })),
-                        },
-                      ];
-                      return;
-                    }
-
-                    // Convert from Pie or Cartesian to target Cartesian mode
-                    const catName = xObj?.type === 'category' ? xObj?.name : yObj?.type === 'category' ? yObj?.name : '';
-                    const valName = yObj?.type === 'value' ? yObj?.name : xObj?.type === 'value' ? xObj?.name : seriesArr[0]?.name || '';
-
-                    if (targetMode === 'horizontal_bar') {
-                      c.xAxis = { type: 'value', name: valName, show: true };
-                      c.yAxis = { type: 'category', name: catName, data: cats, inverse: true, show: true };
-                    } else {
-                      c.xAxis = { type: 'category', name: catName, data: cats, show: true };
-                      c.yAxis = { type: 'value', name: valName, show: true };
-                    }
-                    c.tooltip = { trigger: targetMode === 'scatter' ? 'item' : 'axis' };
-
-                    c.series = seriesArr.map((s: any) => {
-                      const vals = normalizeValues(s);
-                      const nextS: any = {
-                        ...s,
-                        type:
-                          targetMode === 'line' || targetMode === 'area'
-                            ? 'line'
-                            : targetMode === 'scatter'
-                            ? 'scatter'
-                            : 'bar',
-                        data: vals,
-                        smooth: targetMode === 'line' || targetMode === 'area',
-                      };
-                      delete nextS.radius;
-                      if (targetMode === 'area') {
-                        nextS.areaStyle = { opacity: 0.25 };
-                      } else {
-                        delete nextS.areaStyle;
+              {/* Prompt Suggestions */}
+              <div>
+                <label className="block font-semibold text-m3-on-surface mb-1.5 text-[11px]">
+                  What would you like to change?
+                </label>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {[
+                    'Switch to Monthly Trend',
+                    'Top 5 Only',
+                    'Cumulative Area Chart',
+                    'Convert to Table',
+                    'Sort by Highest Value',
+                  ].map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() =>
+                        setAiEditPrompt((prev) => (prev ? `${prev}, and ${suggestion.toLowerCase()}` : suggestion))
                       }
-                      if (targetMode === 'stacked_bar') {
-                        nextS.stack = 'total';
-                      } else {
-                        delete nextS.stack;
-                      }
-                      return nextS;
-                    });
-                  });
-                };
+                      className="px-2.5 py-1 rounded-full bg-m3-surface-container-high hover:bg-m3-primary/15 hover:text-m3-primary text-m3-on-surface text-[10px] font-medium transition-colors cursor-pointer"
+                    >
+                      + {suggestion}
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  value={aiEditPrompt}
+                  onChange={(e) => setAiEditPrompt(e.target.value)}
+                  placeholder="e.g., Change the y-axis to additions, filter to the top 5 authors, and display as a smoothed stacked area chart..."
+                  rows={3}
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-m3-on-surface text-xs placeholder:text-m3-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-m3-primary resize-none"
+                />
+              </div>
 
-                const sortChartData = (direction: 'desc' | 'asc' | 'reverse') => {
-                  updateSpecPatch((c) => {
-                    const seriesArr: any[] = Array.isArray(c.series) ? c.series : [];
-                    if (seriesArr.length === 0) return;
+              {/* Optional Collapsible Details */}
+              <div className="rounded-2xl border border-m3-outline-variant/25 bg-m3-surface-container-low/50 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedEditFields(!showAdvancedEditFields)}
+                  className="w-full px-3 py-2 flex items-center justify-between text-[11px] font-medium text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-container-high/40 transition-colors cursor-pointer"
+                >
+                  <span>Optional: Specify Metrics & Dimensions</span>
+                  {showAdvancedEditFields ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
 
-                    if (seriesArr[0]?.type === 'pie' && Array.isArray(seriesArr[0].data)) {
-                      if (direction === 'reverse') {
-                        seriesArr[0].data.reverse();
-                      } else {
-                        seriesArr[0].data.sort((a: any, b: any) =>
-                          direction === 'desc'
-                            ? (Number(b?.value) || 0) - (Number(a?.value) || 0)
-                            : (Number(a?.value) || 0) - (Number(b?.value) || 0)
-                        );
-                      }
-                      return;
-                    }
-
-                    const xObj = Array.isArray(c.xAxis) ? c.xAxis[0] : c.xAxis;
-                    const yObj = Array.isArray(c.yAxis) ? c.yAxis[0] : c.yAxis;
-                    const catAxis =
-                      Array.isArray(xObj?.data) && xObj.data.length > 0
-                        ? xObj
-                        : Array.isArray(yObj?.data) && yObj.data.length > 0
-                        ? yObj
-                        : null;
-                    if (!catAxis || !Array.isArray(catAxis.data)) return;
-
-                    const primaryVals: number[] = (seriesArr[0]?.data || []).map((v: any) =>
-                      typeof v === 'number' ? v : Number(v?.value ?? v) || 0
-                    );
-                    const indices = catAxis.data.map((_: any, i: number) => i);
-                    if (direction === 'reverse') {
-                      indices.reverse();
-                    } else {
-                      indices.sort((i: number, j: number) =>
-                        direction === 'desc'
-                          ? (primaryVals[j] || 0) - (primaryVals[i] || 0)
-                          : (primaryVals[i] || 0) - (primaryVals[j] || 0)
-                      );
-                    }
-                    catAxis.data = indices.map((i: number) => catAxis.data[i]);
-                    seriesArr.forEach((s: any) => {
-                      if (Array.isArray(s.data) && s.data.length === indices.length) {
-                        s.data = indices.map((i: number) => s.data[i]);
-                      }
-                    });
-                  });
-                };
-
-                return (
-                  <div className="flex flex-col gap-3">
-                    {/* 1-Click Chart Type & Sort Controls */}
-                    <div className="p-2.5 rounded-2xl bg-m3-surface-container-low/60 border border-m3-outline-variant/25 flex flex-col gap-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-m3-on-surface">
-                          Quick Chart Type Switcher
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => sortChartData('desc')}
-                            className="px-2 py-0.5 rounded-lg bg-m3-surface hover:bg-m3-primary/15 text-m3-on-surface-variant hover:text-m3-primary border border-m3-outline-variant/30 text-[10px] font-semibold cursor-pointer transition-colors"
-                            title="Sort series highest to lowest"
-                          >
-                            Sort High → Low
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => sortChartData('asc')}
-                            className="px-2 py-0.5 rounded-lg bg-m3-surface hover:bg-m3-primary/15 text-m3-on-surface-variant hover:text-m3-primary border border-m3-outline-variant/30 text-[10px] font-semibold cursor-pointer transition-colors"
-                            title="Sort series lowest to highest"
-                          >
-                            Sort Low → High
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => sortChartData('reverse')}
-                            className="px-2 py-0.5 rounded-lg bg-m3-surface hover:bg-m3-primary/15 text-m3-on-surface-variant hover:text-m3-primary border border-m3-outline-variant/30 text-[10px] font-semibold cursor-pointer transition-colors"
-                            title="Reverse axis order"
-                          >
-                            Reverse
-                          </button>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {[
-                          { id: 'bar', label: 'Vertical Bar' },
-                          { id: 'horizontal_bar', label: 'Horizontal Bar' },
-                          { id: 'stacked_bar', label: 'Stacked Bar' },
-                          { id: 'line', label: 'Line' },
-                          { id: 'area', label: 'Smooth Area' },
-                          { id: 'pie', label: 'Donut / Pie' },
-                          { id: 'scatter', label: 'Scatter' },
-                        ].map((opt) => (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => switchVisualArchetype(opt.id as any)}
-                            className="px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-m3-surface hover:bg-m3-primary hover:text-m3-on-primary text-m3-on-surface border border-m3-outline-variant/30 transition-colors cursor-pointer"
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
+                {showAdvancedEditFields && (
+                  <div className="p-3 pt-1 border-t border-m3-outline-variant/20 grid grid-cols-1 sm:grid-cols-3 gap-2 animate-fadeIn">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-m3-on-surface-variant mb-1">
+                        Metric / Y-Axis
+                      </label>
+                      <input
+                        type="text"
+                        value={aiMetricDraft}
+                        onChange={(e) => setAiMetricDraft(e.target.value)}
+                        placeholder="e.g. commits, additions"
+                        className="w-full px-2.5 py-1.5 rounded-xl bg-m3-surface border border-m3-outline-variant/30 text-m3-on-surface text-[11px]"
+                      />
                     </div>
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="block font-semibold text-m3-on-surface mb-1">
-                          X-Axis Label / Name
-                        </label>
-                        <input
-                          type="text"
-                          value={xAx?.name || ''}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateSpecPatch((c) => {
-                              if (Array.isArray(c.xAxis)) {
-                                c.xAxis[0] = { ...(c.xAxis[0] || {}), name: val };
-                              } else {
-                                c.xAxis = { ...(c.xAxis || { type: 'category' }), name: val };
-                              }
-                            });
-                          }}
-                          placeholder="e.g. Category / Date"
-                          className="w-full px-3 py-1.5 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-m3-on-surface"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-m3-on-surface mb-1">
-                          Data Value Labels on Chart
-                        </label>
-                        <select
-                          value={labelsShown ? 'show' : 'hide'}
-                          onChange={(e) => {
-                            const show = e.target.value === 'show';
-                            updateSpecPatch((c) => {
-                              if (Array.isArray(c.series)) {
-                                c.series.forEach((s: any) => {
-                                  s.label = {
-                                    ...(s.label || {}),
-                                    show,
-                                    position: s.type === 'pie' ? 'outside' : 'top',
-                                  };
-                                });
-                              }
-                            });
-                          }}
-                          className="w-full px-3 py-1.5 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-m3-on-surface cursor-pointer"
-                        >
-                          <option value="show">Show Value Labels</option>
-                          <option value="hide">Hide Value Labels</option>
-                        </select>
-                      </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-m3-on-surface-variant mb-1">
+                        Dimension / X-Axis
+                      </label>
+                      <input
+                        type="text"
+                        value={aiDimensionDraft}
+                        onChange={(e) => setAiDimensionDraft(e.target.value)}
+                        placeholder="e.g. month, author"
+                        className="w-full px-2.5 py-1.5 rounded-xl bg-m3-surface border border-m3-outline-variant/30 text-m3-on-surface text-[11px]"
+                      />
                     </div>
-
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="block font-semibold text-m3-on-surface mb-1">
-                          Left Y-Axis (Axis 0) Name
-                        </label>
-                        <input
-                          type="text"
-                          value={yAxList[0]?.name || ''}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateSpecPatch((c) => {
-                              if (Array.isArray(c.yAxis)) {
-                                c.yAxis[0] = { ...(c.yAxis[0] || { type: 'value' }), name: val };
-                              } else {
-                                c.yAxis = { ...(c.yAxis || { type: 'value' }), name: val };
-                              }
-                            });
-                          }}
-                          placeholder="e.g. Lines / Count"
-                          className="w-full px-3 py-1.5 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-m3-on-surface"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-m3-on-surface mb-1">
-                          Right Y-Axis (Axis 1) Name
-                        </label>
-                        <input
-                          type="text"
-                          value={yAxList[1]?.name || ''}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateSpecPatch((c) => {
-                              const arr = Array.isArray(c.yAxis)
-                                ? c.yAxis
-                                : [c.yAxis || { type: 'value', position: 'left' }];
-                              if (arr.length < 2) {
-                                arr.push({ type: 'value', name: val, position: 'right' });
-                              } else {
-                                arr[1] = { ...arr[1], name: val, position: 'right' };
-                              }
-                              c.yAxis = arr;
-                            });
-                          }}
-                          placeholder="Optional secondary Y-Axis"
-                          className="w-full px-3 py-1.5 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/40 text-m3-on-surface"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Multi-Metric Series List */}
-                    <div className="flex flex-col gap-2 pt-1 border-t border-m3-outline-variant/20">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-m3-on-surface">
-                          Metric Series ({curSeries.length})
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            updateSpecPatch((c) => {
-                              if (!Array.isArray(c.series)) c.series = [];
-                              const firstLen =
-                                Array.isArray(c.series[0]?.data) && c.series[0].data.length > 0
-                                  ? c.series[0].data.length
-                                  : 4;
-                              const defaultVals = Array.from(
-                                { length: firstLen },
-                                (_, idx) => (idx + 1) * 15
-                              );
-                              const newIdx = c.series.length + 1;
-                              c.series.push({
-                                name: `Metric ${newIdx}`,
-                                type: 'line',
-                                yAxisIndex: 0,
-                                smooth: true,
-                                data: defaultVals,
-                              });
-                              c.legend = {
-                                ...(c.legend || { bottom: '2%', left: 'center' }),
-                                data: c.series.map((s: any, i: number) => s.name || `Series ${i + 1}`),
-                              };
-                            });
-                          }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-m3-primary/15 text-m3-primary font-semibold hover:bg-m3-primary/25 transition-colors cursor-pointer"
-                        >
-                          <Plus className="w-3 h-3" />
-                          <span>Add Metric Series</span>
-                        </button>
-                      </div>
-
-                      {curSeries.map((s, sIdx) => {
-                        const isSimpleNumeric =
-                          Array.isArray(s?.data) &&
-                          s.data.every((d: any) => typeof d === 'number' || typeof d === 'string');
-                        return (
-                          <div
-                            key={sIdx}
-                            className="p-2.5 rounded-2xl bg-m3-surface-container-low border border-m3-outline-variant/25 flex flex-col gap-2"
-                          >
-                            <div className="grid grid-cols-3 gap-2 items-center">
-                              <input
-                                type="text"
-                                value={s?.name || `Series ${sIdx + 1}`}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  updateSpecPatch((c) => {
-                                    if (c.series?.[sIdx]) c.series[sIdx].name = val;
-                                  });
-                                }}
-                                placeholder="Metric Name"
-                                className="px-2.5 py-1 rounded-lg bg-m3-surface-container-lowest border border-m3-outline-variant/30 text-m3-on-surface font-medium"
-                              />
-                              <select
-                                value={
-                                  s?.type === 'line' && s?.areaStyle
-                                    ? 'area'
-                                    : s?.type === 'bar' && s?.stack
-                                    ? 'stacked_bar'
-                                    : s?.type || 'bar'
-                                }
-                                onChange={(e) => {
-                                  const t = e.target.value;
-                                  updateSpecPatch((c) => {
-                                    const target = c.series?.[sIdx];
-                                    if (!target) return;
-                                    if (t === 'area') {
-                                      target.type = 'line';
-                                      target.smooth = true;
-                                      target.areaStyle = { opacity: 0.25 };
-                                      delete target.stack;
-                                    } else if (t === 'stacked_bar') {
-                                      target.type = 'bar';
-                                      target.stack = 'total';
-                                      delete target.areaStyle;
-                                    } else {
-                                      target.type = t;
-                                      delete target.areaStyle;
-                                      delete target.stack;
-                                    }
-                                  });
-                                }}
-                                className="px-2 py-1 rounded-lg bg-m3-surface-container-lowest border border-m3-outline-variant/30 text-m3-on-surface cursor-pointer"
-                              >
-                                <option value="bar">Bar Series</option>
-                                <option value="stacked_bar">Stacked Bar Series</option>
-                                <option value="line">Line Series</option>
-                                <option value="area">Area Series</option>
-                                <option value="scatter">Scatter Series</option>
-                                <option value="pie">Pie / Donut</option>
-                              </select>
-                              <div className="flex items-center gap-1">
-                                <select
-                                  value={String(s?.yAxisIndex || 0)}
-                                  onChange={(e) => {
-                                    const axIdx = Number(e.target.value);
-                                    updateSpecPatch((c) => {
-                                      if (c.series?.[sIdx]) c.series[sIdx].yAxisIndex = axIdx;
-                                      if (axIdx === 1) {
-                                        const arr = Array.isArray(c.yAxis)
-                                          ? c.yAxis
-                                          : [c.yAxis || { type: 'value', position: 'left' }];
-                                        if (arr.length < 2) {
-                                          arr.push({
-                                            type: 'value',
-                                            name: c.series?.[sIdx]?.name || 'Secondary',
-                                            position: 'right',
-                                          });
-                                        }
-                                        c.yAxis = arr;
-                                      }
-                                    });
-                                  }}
-                                  className="flex-1 px-2 py-1 rounded-lg bg-m3-surface-container-lowest border border-m3-outline-variant/30 text-m3-on-surface cursor-pointer"
-                                >
-                                  <option value="0">Left Y-Axis (0)</option>
-                                  <option value="1">Right Y-Axis (1)</option>
-                                </select>
-                                {curSeries.length > 1 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      updateSpecPatch((c) => {
-                                        if (Array.isArray(c.series)) {
-                                          c.series.splice(sIdx, 1);
-                                        }
-                                      });
-                                    }}
-                                    className="p-1 rounded-lg text-m3-error hover:bg-m3-error-container/30 cursor-pointer"
-                                    title="Remove metric series"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                            {isSimpleNumeric && (
-                              <div>
-                                <label className="block text-[10px] text-m3-on-surface-variant mb-0.5">
-                                  Values (comma-separated)
-                                </label>
-                                <input
-                                  type="text"
-                                  value={s.data.join(', ')}
-                                  onChange={(e) => {
-                                    const nums = e.target.value
-                                      .split(',')
-                                      .map((v) => parseFloat(v.trim()) || 0);
-                                    updateSpecPatch((c) => {
-                                      if (c.series?.[sIdx]) c.series[sIdx].data = nums;
-                                    });
-                                  }}
-                                  className="w-full px-2.5 py-1 rounded-lg bg-m3-surface-container-lowest border border-m3-outline-variant/30 text-m3-on-surface font-mono text-[11px]"
-                                />
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                    <div>
+                      <label className="block text-[10px] font-semibold text-m3-on-surface-variant mb-1">
+                        Split / Breakdown
+                      </label>
+                      <input
+                        type="text"
+                        value={aiSplitByDraft}
+                        onChange={(e) => setAiSplitByDraft(e.target.value)}
+                        placeholder="e.g. repository, branch"
+                        className="w-full px-2.5 py-1.5 rounded-xl bg-m3-surface border border-m3-outline-variant/30 text-m3-on-surface text-[11px]"
+                      />
                     </div>
                   </div>
-                );
-              })()
-            )}
+                )}
+              </div>
 
-            <div className="flex justify-end pt-2 border-t border-m3-outline-variant/20">
-              <button
-                type="button"
-                onClick={() => setEditChartModalOpen(false)}
-                className="px-4 py-1.5 rounded-full bg-m3-primary text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
-              >
-                Done
-              </button>
+              {/* Action Buttons */}
+              <div className="flex items-center justify-between pt-2 border-t border-m3-outline-variant/20">
+                <button
+                  type="button"
+                  onClick={() => setEditChartModalOpen(false)}
+                  className="px-4 py-2 rounded-xl text-m3-on-surface-variant hover:bg-m3-surface-container-high transition-colors text-xs font-medium cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const promptParts = [
+                      `Update the widget "${widget.title}" (ID: ${widget.id}, type: ${widget.widget_type}).`,
+                    ];
+                    if (aiEditPrompt.trim()) {
+                      promptParts.push(`Requested Changes: ${aiEditPrompt.trim()}`);
+                    }
+                    if (aiMetricDraft.trim()) {
+                      promptParts.push(`Metric / Value: ${aiMetricDraft.trim()}`);
+                    }
+                    if (aiDimensionDraft.trim()) {
+                      promptParts.push(`Dimension / Grouping: ${aiDimensionDraft.trim()}`);
+                    }
+                    if (aiSplitByDraft.trim()) {
+                      promptParts.push(`Split By: ${aiSplitByDraft.trim()}`);
+                    }
+                    promptParts.push(
+                      `Please apply these updates directly to the widget while preserving its existing contract schema and styling.`
+                    );
+
+                    const fullPrompt = promptParts.join('\n');
+                    onOpenCopilot?.(fullPrompt);
+                    setEditChartModalOpen(false);
+                  }}
+                  disabled={
+                    !aiEditPrompt.trim() &&
+                    !aiMetricDraft.trim() &&
+                    !aiDimensionDraft.trim() &&
+                    !aiSplitByDraft.trim() &&
+                    widgetTitleDraft === widget.title
+                  }
+                  className="px-5 py-2 rounded-xl bg-m3-primary text-white font-semibold hover:opacity-95 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 cursor-pointer shadow-sm text-xs"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Update Widget</span>
+                </button>
+              </div>
             </div>
-          </div>
-        </div>,
-        document.body
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

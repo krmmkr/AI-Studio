@@ -27,7 +27,7 @@ export const App: React.FC = () => {
 
   // Default View: 'home' displays the visual thumbnail gallery.
   // Clicking any dashboard transitions into 'canvas'.
-  // Clicking the Antigravity Studio logo returns to 'home'.
+  // Clicking the AI Studio logo returns to 'home'.
   const [currentView, setCurrentView] = useState<'home' | 'canvas'>(() => {
     return (localStorage.getItem('antigravity_view') as 'home' | 'canvas') || 'home';
   });
