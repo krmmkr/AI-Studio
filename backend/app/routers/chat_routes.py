@@ -293,6 +293,14 @@ def create_session(payload: ChatSessionCreate, current_user: User = Depends(get_
     )
     db.add(session)
     db.commit()
+
+    if session.repo_id:
+        try:
+            from backend.app.services.seed_data import refresh_public_repository_dashboard
+            refresh_public_repository_dashboard(db)
+        except Exception as e:
+            logger.warning(f"Failed to auto-refresh public repo inventory after create_session: {e}")
+
     dash_title = None
     if payload.dashboard_id:
         dash = db.query(Dashboard).filter(Dashboard.id == payload.dashboard_id).first()
@@ -618,8 +626,17 @@ def delete_session(session_id: str, current_user: User = Depends(get_current_use
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    had_repo = bool(session.repo_id)
     db.delete(session)
     db.commit()
+
+    if had_repo:
+        try:
+            from backend.app.services.seed_data import refresh_public_repository_dashboard
+            refresh_public_repository_dashboard(db)
+        except Exception as e:
+            logger.warning(f"Failed to auto-refresh public repo inventory after delete_session: {e}")
+
     return {"message": "Session deleted"}
 
 @router.post("/sessions/{session_id}/stop")

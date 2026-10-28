@@ -23,8 +23,8 @@ interface NavbarProps {
   darkMode: boolean;
   onToggleDarkMode: () => void;
   onNavigateHome?: () => void;
-  activeTab?: 'chat' | 'my' | 'public' | 'studio';
-  onSelectTab?: (tab: 'chat' | 'my' | 'public' | 'studio') => void;
+  activeTab?: 'chat' | 'my' | 'public' | 'repos' | 'studio';
+  onSelectTab?: (tab: 'chat' | 'my' | 'public' | 'repos' | 'studio') => void;
   workspaceScope?: 'my' | 'public';
   onSelectWorkspaceScope?: (scope: 'my' | 'public') => void;
   onOpenSettings: () => void;
@@ -74,6 +74,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isChatActive = activeTab === 'chat';
   const isMyActive = activeTab ? activeTab === 'my' : workspaceScope === 'my';
   const isPublicActive = activeTab ? activeTab === 'public' : workspaceScope === 'public';
+  const isReposActive = activeTab === 'repos';
   const isStudioActive = activeTab === 'studio';
 
   return (
@@ -138,7 +139,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>Public Workspace</span>
           </button>
 
-          {/* Tab 4: Code Studio IDE */}
+          {/* Tab 4: Repositories & Worktrees Hub */}
+          <button
+            onClick={() => (onSelectTab ? onSelectTab('repos') : undefined)}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
+              isReposActive
+                ? 'bg-m3-primary text-m3-on-primary shadow-xs'
+                : 'text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-container-high'
+            }`}
+            title="Repository & Git Worktree Hub, Dev Ports, Associated Chats and Tasks"
+          >
+            <FolderGit2 className="w-3.5 h-3.5" />
+            <span>Repositories</span>
+          </button>
+
+          {/* Tab 5: Code Studio IDE */}
           <button
             onClick={() => (onSelectTab ? onSelectTab('studio') : undefined)}
             className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${

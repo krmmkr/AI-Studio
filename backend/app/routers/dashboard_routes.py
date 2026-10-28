@@ -28,6 +28,7 @@ class WidgetPayload(BaseModel):
 class DashboardCreatePayload(BaseModel):
     title: str
     description: str | None = None
+    is_public: bool = False
     sources: list[dict] | None = None
     datasources: list[dict] | None = None
 
@@ -172,11 +173,12 @@ def create_dashboard(payload: DashboardCreatePayload, current_user: User = Depen
         title=payload.title,
         description=payload.description,
         is_default=False,
+        is_public=bool(payload.is_public),
         datasources_json=json.dumps(srcs) if srcs else None
     )
     db.add(dash)
     db.commit()
-    return {"id": dash.id, "title": dash.title}
+    return {"id": dash.id, "title": dash.title, "is_public": bool(dash.is_public)}
 
 @router.post("/{dashboard_id}/duplicate")
 def duplicate_dashboard(dashboard_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -315,6 +317,24 @@ def refresh_widget(dashboard_id: str, widget_id: str, current_user: User = Depen
 
     # Handle react_app widgets safely: update underlying dataset without destroying component code
     if widget.widget_type == "react_app" or spec.get("type") == "react_app":
+        if widget.widget_id == "public-widget-repo-worktree-cards" or spec.get("app_name") == "Repository & Worktree Manager":
+            from backend.app.services.seed_data import get_structured_repository_inventory
+            spec["repositories"] = get_structured_repository_inventory(db)
+            widget.updated_at = datetime.datetime.utcnow()
+            widget.spec_json = json.dumps(spec)
+            widget.datasource_json = json.dumps(datasource) if datasource else None
+            db.commit()
+            return {
+                "success": True,
+                "id": widget.widget_id,
+                "title": widget.title,
+                "widget_type": widget.widget_type,
+                "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+                "spec": spec,
+                "datasource": datasource,
+                "updated_at": widget.updated_at.isoformat()
+            }
+
         query_to_run = datasource.get("query") or datasource.get("sql")
         
         # 1. Check if an agent recipe is attached to this widget or its dataset
@@ -500,6 +520,23 @@ def refresh_dashboard(
 
         # Safely preserve react_app widgets: refresh their data rows without destroying custom component code
         if widget.widget_type == "react_app" or spec.get("type") == "react_app":
+            if widget.widget_id == "public-widget-repo-worktree-cards" or spec.get("app_name") == "Repository & Worktree Manager":
+                from backend.app.services.seed_data import get_structured_repository_inventory
+                spec["repositories"] = get_structured_repository_inventory(db)
+                widget.updated_at = datetime.datetime.utcnow()
+                widget.spec_json = json.dumps(spec)
+                widget.datasource_json = json.dumps(datasource) if datasource else None
+                refreshed_widgets.append({
+                    "id": widget.widget_id,
+                    "title": widget.title,
+                    "widget_type": widget.widget_type,
+                    "grid": json.loads(widget.grid_json) if widget.grid_json else {"x": 0, "y": 0, "w": 6, "h": 4},
+                    "spec": spec,
+                    "datasource": datasource,
+                    "updated_at": widget.updated_at.isoformat()
+                })
+                continue
+
             # Check for declarative generation recipe
             recipe = datasource.get("refresh_recipe") or spec.get("refresh_recipe")
             if not recipe and query_to_run:

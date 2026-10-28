@@ -104,6 +104,37 @@ export const agentApi = {
       body: JSON.stringify({ system_instructions: systemInstructions }),
     }),
   listRepositories: (): Promise<LocalRepository[]> => request<LocalRepository[]>('/api/agents/repositories'),
+  getRepositoryInventory: (): Promise<{
+    repositories: Array<{
+      id: number;
+      name: string;
+      remote_url: string;
+      default_branch: string;
+      clone_type: string;
+      local_path: string;
+      worktrees: Array<{
+        branch: string;
+        role: string;
+        is_main: boolean;
+        port: number;
+        preview_url: string;
+        path: string;
+        head_sha: string;
+        last_commit: string;
+        chats: Array<{
+          id: string;
+          title: string;
+          session_type: string;
+          agent_id: string;
+          message_count: number;
+          updated_at: string;
+        }>;
+      }>;
+    }>;
+    total_repositories: number;
+    total_worktrees: number;
+    total_chats: number;
+  }> => request('/api/agents/repositories/inventory'),
   registerRepository: (data: { name: string; remote_url: string; clone_type?: string; default_branch?: string }) =>
     request<{ message: string; id: number; local_path: string }>('/api/agents/repositories', {
       method: 'POST',
@@ -302,8 +333,8 @@ export const dashboardApi = {
   list: (scope?: 'all' | 'my' | 'public'): Promise<any[]> =>
     request(`/api/dashboards${scope ? `?scope=${scope}` : ''}`),
   get: (id: string): Promise<Dashboard> => request<Dashboard>(`/api/dashboards/${id}`),
-  create: (data: { title: string; description?: string; datasources?: any[]; sources?: any[] }) =>
-    request<{ id: string; title: string }>('/api/dashboards', {
+  create: (data: { title: string; description?: string; is_public?: boolean; datasources?: any[]; sources?: any[] }) =>
+    request<{ id: string; title: string; is_public?: boolean }>('/api/dashboards', {
       method: 'POST',
       body: JSON.stringify(data),
     }),

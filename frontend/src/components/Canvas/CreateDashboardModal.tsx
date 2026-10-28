@@ -14,6 +14,7 @@ interface CreateDashboardModalProps {
   onClose: () => void;
   onDashboardCreated: (newId: string) => void;
   repositories?: LocalRepository[];
+  defaultIsPublic?: boolean;
 }
 
 export const CreateDashboardModal: React.FC<CreateDashboardModalProps> = ({
@@ -21,6 +22,7 @@ export const CreateDashboardModal: React.FC<CreateDashboardModalProps> = ({
   onClose,
   onDashboardCreated,
   repositories = [],
+  defaultIsPublic = false,
 }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -58,6 +60,7 @@ export const CreateDashboardModal: React.FC<CreateDashboardModalProps> = ({
       const res = await dashboardApi.create({
         title: title.trim(),
         description: description.trim() || undefined,
+        is_public: defaultIsPublic,
         sources: sources.length > 0 ? sources : undefined,
       });
 

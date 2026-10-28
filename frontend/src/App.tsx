@@ -16,15 +16,16 @@ import { RepositoryManagerModal } from './components/Settings/RepositoryManagerM
 import { LoginModal } from './components/Auth/LoginModal';
 import { AgenticChat } from './components/Chat/AgenticChat';
 import { CodeStudio } from './components/Studio/CodeStudio';
+import { RepositoryHub } from './components/RepositoryHub/RepositoryHub';
 import { Loader2 } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Top Nav Tab: 'chat' (Agentic Chat), 'my' (My Workspace), 'public' (Public Workspace), or 'studio' (Code Studio)
-  const [activeNavTab, setActiveNavTab] = useState<'chat' | 'my' | 'public' | 'studio'>(() => {
-    return (localStorage.getItem('antigravity_nav_tab') as 'chat' | 'my' | 'public' | 'studio') || 'chat';
+  // Top Nav Tab: 'chat' (Agentic Chat), 'my' (My Workspace), 'public' (Public Workspace), 'repos' (Repositories & Worktrees), or 'studio' (Code Studio)
+  const [activeNavTab, setActiveNavTab] = useState<'chat' | 'my' | 'public' | 'repos' | 'studio'>(() => {
+    return (localStorage.getItem('antigravity_nav_tab') as 'chat' | 'my' | 'public' | 'repos' | 'studio') || 'chat';
   });
 
   // Default View: 'home' displays the visual thumbnail gallery.
@@ -71,13 +72,24 @@ export const App: React.FC = () => {
   const [repositories, setRepositories] = useState<LocalRepository[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('main-service');
 
-  const [dashboardsList, setDashboardsList] = useState<Array<{ id: string; title: string; description?: string; widget_count: number }>>([]);
+  const [dashboardsList, setDashboardsList] = useState<Array<{ id: string; title: string; description?: string; widget_count: number; is_public?: boolean; is_owner?: boolean; owner_email?: string }>>([]);
   const [activeDashboard, setActiveDashboard] = useState<Dashboard | null>(null);
-  const [workspaceScope, setWorkspaceScope] = useState<'my' | 'public'>('my');
+  const [workspaceScope, setWorkspaceScope] = useState<'my' | 'public'>(() => {
+    return localStorage.getItem('antigravity_nav_tab') === 'public' ? 'public' : 'my';
+  });
+
+  // Keep workspaceScope strictly synchronized with activeNavTab across reloads
+  useEffect(() => {
+    if (activeNavTab === 'public') {
+      setWorkspaceScope('public');
+    } else if (activeNavTab === 'my') {
+      setWorkspaceScope('my');
+    }
+  }, [activeNavTab]);
 
   // Automatically dismiss canvas assistant drawer when navigating out of the dashboard canvas
   useEffect(() => {
-    if (activeNavTab === 'chat' || activeNavTab === 'studio' || currentView !== 'canvas' || !activeDashboard) {
+    if (activeNavTab === 'chat' || activeNavTab === 'studio' || activeNavTab === 'repos' || currentView !== 'canvas' || !activeDashboard) {
       setDashboardCopilotOpen(false);
       setCopilotInitialPrompt(undefined);
     }
@@ -153,7 +165,7 @@ export const App: React.FC = () => {
       const fullDash = await dashboardApi.get(id);
       setActiveDashboard(fullDash);
       setCurrentView('canvas');
-      if (activeNavTab === 'chat' || activeNavTab === 'studio') {
+      if (activeNavTab === 'chat' || activeNavTab === 'studio' || activeNavTab === 'repos') {
         setActiveNavTab('my');
         localStorage.setItem('antigravity_nav_tab', 'my');
       }
@@ -188,7 +200,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSelectTab = (tab: 'chat' | 'my' | 'public' | 'studio') => {
+  const handleSelectTab = (tab: 'chat' | 'my' | 'public' | 'repos' | 'studio') => {
     setActiveNavTab(tab);
     localStorage.setItem('antigravity_nav_tab', tab);
     if (tab === 'my') {
@@ -423,7 +435,40 @@ export const App: React.FC = () => {
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenAgentInstructions={() => setAgentInstructionsOpen(true)}
           />
-        ) : currentView === 'home' ? (
+        ) : activeNavTab === 'repos' ? (
+          /* Dedicated Agor-Style Repository & Git Worktree Hub */
+          <RepositoryHub
+            user={user}
+            darkMode={darkMode}
+            onNavigateToStudio={(repoId?: number, worktreePath?: string, filePath?: string) => {
+              if (repoId) {
+                localStorage.setItem('studio_active_repo_id', repoId.toString());
+              }
+              if (worktreePath) {
+                localStorage.setItem('studio_active_worktree_path', worktreePath);
+              }
+              if (filePath) {
+                localStorage.setItem('studio_active_file_path', filePath);
+              }
+              setActiveNavTab('studio');
+              localStorage.setItem('antigravity_nav_tab', 'studio');
+            }}
+            onNavigateToChat={(sessionId?: string, repoId?: number, worktreePath?: string) => {
+              if (sessionId) {
+                localStorage.setItem('antigravity_active_session_id', sessionId);
+              }
+              if (repoId) {
+                localStorage.setItem('chat_active_repo_id', repoId.toString());
+              }
+              if (worktreePath) {
+                localStorage.setItem('chat_active_worktree_path', worktreePath);
+              }
+              setActiveNavTab('chat');
+              localStorage.setItem('antigravity_nav_tab', 'chat');
+            }}
+            onOpenRepoManager={() => setRepoManagerOpen(true)}
+          />
+        ) : currentView === 'home' || !activeDashboard || (activeNavTab === 'public' && !activeDashboard.is_public) ? (
           /* Default Homescreen: Visual Thumbnail Gallery */
           <DashboardHomescreen
             dashboards={dashboardsList}
@@ -432,7 +477,7 @@ export const App: React.FC = () => {
             onCreateNewDashboard={() => setCreateDashboardOpen(true)}
             onDeleteDashboard={handleDeleteDashboard}
             onToggleShare={handleToggleShare}
-            workspaceScope={workspaceScope}
+            workspaceScope={activeNavTab === 'public' ? 'public' : workspaceScope}
           />
         ) : (
           /* Full-Width Canvas Workspace (Context-isolated & free-flow editable) */
@@ -478,7 +523,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Dashboard-Level Studio Assistant Drawer (Strictly scoped to active dashboard canvas) */}
-        {activeNavTab !== 'chat' && activeNavTab !== 'studio' && currentView === 'canvas' && activeDashboard && (
+        {activeNavTab !== 'chat' && activeNavTab !== 'studio' && activeNavTab !== 'repos' && currentView === 'canvas' && activeDashboard && (
           <DashboardCopilotDrawer
             isOpen={dashboardCopilotOpen}
             onClose={() => {
@@ -528,6 +573,7 @@ export const App: React.FC = () => {
         onClose={() => setCreateDashboardOpen(false)}
         onDashboardCreated={(newId) => loadDashboards(newId)}
         repositories={repositories}
+        defaultIsPublic={activeNavTab === 'public'}
       />
 
       <UserManagementModal

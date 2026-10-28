@@ -55,11 +55,11 @@ export const DashboardHomescreen: React.FC<DashboardHomescreenProps> = ({
 
     if (!matchesSearch) return false;
 
-    if (workspaceScope === 'my') {
-      return d.is_owner;
-    }
     if (workspaceScope === 'public') {
-      return d.is_public;
+      return Boolean(d.is_public);
+    }
+    if (workspaceScope === 'my') {
+      return Boolean(d.is_owner) && !d.is_public;
     }
     return true;
   });
@@ -71,7 +71,7 @@ export const DashboardHomescreen: React.FC<DashboardHomescreenProps> = ({
         <div className="flex items-center justify-between pb-1">
           <div className="flex items-center gap-3">
             <h1 className="text-xl sm:text-2xl font-bold text-m3-on-surface tracking-tight">
-              Dashboards
+              {workspaceScope === 'public' ? 'Public Dashboards' : 'My Dashboards'}
             </h1>
             <span className="text-xs font-mono px-2.5 py-0.5 rounded-full bg-m3-surface-container text-m3-on-surface-variant font-medium">
               {filteredDashboards.length}

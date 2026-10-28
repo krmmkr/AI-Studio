@@ -136,6 +136,26 @@ def list_repositories(current_user: User = Depends(get_current_user), db: Sessio
         })
     return results
 
+@router.get("/repositories/inventory")
+def get_repository_inventory(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Returns the comprehensive, live inventory of all repositories,
+    active Git worktrees, dev preview ports, and associated agent chat sessions.
+    """
+    from backend.app.services.seed_data import get_structured_repository_inventory
+    repos = get_structured_repository_inventory(db)
+    total_worktrees = sum(len(r.get("worktrees", [])) for r in repos)
+    total_chats = sum(
+        sum(len(wt.get("chats", [])) for wt in r.get("worktrees", []))
+        for r in repos
+    )
+    return {
+        "repositories": repos,
+        "total_repositories": len(repos),
+        "total_worktrees": total_worktrees,
+        "total_chats": total_chats
+    }
+
 @router.post("/repositories")
 def register_repository(
     payload: RepoCreatePayload,
@@ -168,6 +188,12 @@ def register_repository(
     db.add(repo)
     db.commit()
     db.refresh(repo)
+
+    try:
+        from backend.app.services.seed_data import refresh_public_repository_dashboard
+        refresh_public_repository_dashboard(db)
+    except Exception as e:
+        logger.warning(f"Failed to auto-refresh public repo inventory after register: {e}")
 
     return {
         "message": f"Successfully cloned repository '{safe_name}' into persistent local storage.",
@@ -299,6 +325,13 @@ def create_repository_worktree(
         )
         wt["assigned_port"] = port
         wt["preview_url"] = port_manager.get_preview_url(port)
+
+        try:
+            from backend.app.services.seed_data import refresh_public_repository_dashboard
+            refresh_public_repository_dashboard(db)
+        except Exception as e:
+            logger.warning(f"Failed to auto-refresh public repo inventory after create_worktree: {e}")
+
         return {"message": "Worktree created successfully", "worktree": wt}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -352,6 +385,13 @@ def remove_repository_worktree(
 
     port_manager.release_port(db, repo.id, req.worktree_path)
     success = git_service.remove_worktree(repo.local_path, req.worktree_path)
+
+    try:
+        from backend.app.services.seed_data import refresh_public_repository_dashboard
+        refresh_public_repository_dashboard(db)
+    except Exception as e:
+        logger.warning(f"Failed to auto-refresh public repo inventory after remove_worktree: {e}")
+
     return {
         "success": success,
         "message": f"Worktree removed, assigned port released ({archived_count} session(s) archived)" if should_archive else "Worktree removed and sessions permanently deleted",
@@ -672,6 +712,13 @@ def delete_repository(
 
     db.delete(repo)
     db.commit()
+
+    try:
+        from backend.app.services.seed_data import refresh_public_repository_dashboard
+        refresh_public_repository_dashboard(db)
+    except Exception as e:
+        logger.warning(f"Failed to auto-refresh public repo inventory after delete_repository: {e}")
+
     return {"message": f"Repository '{repo.name}' removed from local registry and disk storage."}
 
 @router.get("/repositories/{repo_id}/branches")
@@ -758,6 +805,11 @@ def clone_repository_stream(
                         db_session.commit()
                         db_session.refresh(repo)
                         event["repo_id"] = repo.id
+                        try:
+                            from backend.app.services.seed_data import refresh_public_repository_dashboard
+                            refresh_public_repository_dashboard(db_session)
+                        except Exception as e:
+                            logger.warning(f"Failed to auto-refresh public repo inventory after clone stream: {e}")
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             err_event = {"stage": "error", "percent": 0, "detail": str(e)}
