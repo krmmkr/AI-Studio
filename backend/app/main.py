@@ -25,7 +25,8 @@ from backend.app.routers import (
     dashboard_routes,
     file_routes,
     duckdb_routes,
-    agent_routes
+    agent_routes,
+    system_routes,
 )
 
 @asynccontextmanager
@@ -75,6 +76,7 @@ app.include_router(dashboard_routes.router)
 app.include_router(file_routes.router)
 app.include_router(duckdb_routes.router)
 app.include_router(agent_routes.router)
+app.include_router(system_routes.router)
 
 @app.get("/api/health")
 @app.get("/healthz")

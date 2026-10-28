@@ -106,6 +106,18 @@ JWT_SECRET = os.environ.get("JWT_SECRET", DEFAULT_DEV_SECRET)
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRATION_MINUTES = int(os.environ.get("JWT_EXPIRATION_MINUTES", "1440"))
 
+def is_auth_enabled() -> bool:
+    """
+    Returns True if authentication & SSO are enforced, False for frictionless local dev & testing.
+    Default is True.
+    """
+    val = os.environ.get("AUTH", "true").strip().lower()
+    return val in ("true", "1", "yes")
+
+# Auth state: 'true' requires SSO; 'false' disables SSO for local dev and testing. Default is True.
+AUTH = is_auth_enabled()
+AUTH_ENABLED = AUTH
+
 # Production security assertion
 if ENVIRONMENT == "production" and JWT_SECRET == DEFAULT_DEV_SECRET:
     raise ValueError(
@@ -160,3 +172,18 @@ ATLASSIAN_CLIENT_SECRET = os.environ.get("ATLASSIAN_CLIENT_SECRET", "").strip()
 GITHUB_OAUTH_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "").strip()
 GITHUB_OAUTH_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "").strip()
 APP_BASE_URL = os.environ.get("APP_BASE_URL", f"http://{HOST}:{PORT}").rstrip("/")
+
+# OpenID Connect (OIDC) SSO Configuration
+OIDC_ISSUER_URL = os.environ.get("OIDC_ISSUER_URL", "").strip()
+OIDC_CLIENT_ID = os.environ.get("OIDC_CLIENT_ID", "").strip()
+OIDC_CLIENT_SECRET = os.environ.get("OIDC_CLIENT_SECRET", "").strip()
+OIDC_REDIRECT_URI = os.environ.get("OIDC_REDIRECT_URI", "").strip()
+OIDC_SCOPES = os.environ.get("OIDC_SCOPES", "openid email profile").strip()
+OIDC_ADMIN_EMAILS = [
+    e.strip().lower() for e in os.environ.get("OIDC_ADMIN_EMAILS", "").split(",") if e.strip()
+]
+# Direct endpoint overrides if discovery is bypassed or custom:
+OIDC_AUTHORIZATION_ENDPOINT = os.environ.get("OIDC_AUTHORIZATION_ENDPOINT", "").strip()
+OIDC_TOKEN_ENDPOINT = os.environ.get("OIDC_TOKEN_ENDPOINT", "").strip()
+OIDC_USERINFO_ENDPOINT = os.environ.get("OIDC_USERINFO_ENDPOINT", "").strip()
+OIDC_JWKS_URI = os.environ.get("OIDC_JWKS_URI", "").strip()

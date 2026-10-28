@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { User } from '../types';
+import { User, SystemBranding } from '../types';
 import { AIStudioLogo } from './Common/AIStudioLogo';
 import {
   LogOut,
@@ -16,10 +16,12 @@ import {
   Terminal,
   Code2,
   KeyRound,
+  Shield,
 } from 'lucide-react';
 
 interface NavbarProps {
   user: User | null;
+  branding?: SystemBranding;
   darkMode: boolean;
   onToggleDarkMode: () => void;
   onNavigateHome?: () => void;
@@ -32,12 +34,14 @@ interface NavbarProps {
   onOpenAgentInstructions: () => void;
   onOpenRepoManager?: () => void;
   onOpenUserManagement: () => void;
+  onOpenAdminSettings?: () => void;
   onOpenDuckDBConsole: () => void;
   onLogout: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   user,
+  branding,
   darkMode,
   onToggleDarkMode,
   onNavigateHome,
@@ -50,6 +54,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAgentInstructions,
   onOpenRepoManager,
   onOpenUserManagement,
+  onOpenAdminSettings,
   onOpenDuckDBConsole,
   onLogout,
 }) => {
@@ -79,13 +84,18 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header className="h-16 px-4 sm:px-6 bg-m3-surface-container-low border-b border-m3-outline-variant/30 flex items-center justify-between shrink-0 relative z-50 transition-colors">
-      {/* Brand with Custom AI Studio Logo */}
+      {/* Brand with Custom or Default Brand Logo */}
       <button
         onClick={onNavigateHome}
         className="flex items-center gap-3 hover:opacity-85 transition-opacity text-left focus:outline-none group cursor-pointer"
-        title="Go to AI Studio Workspaces (Homescreen)"
+        title={`Go to ${branding?.app_name || 'AI Studio'} Workspaces (Homescreen)`}
       >
-        <AIStudioLogo size="md" showText={true} />
+        <AIStudioLogo
+          size="md"
+          showText={true}
+          brandName={branding?.app_name}
+          logoUrl={branding?.logo_url}
+        />
       </button>
 
       {/* Center: Top Workspace Menu (Agentic Chat vs My Workspace vs Public Workspace vs Code Studio) */}
@@ -301,18 +311,35 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <span className="truncate">Agent Personas & Prompts</span>
                   </button>
 
-                  <button
-                    onClick={() => {
-                      setDropdownOpen(false);
-                      onOpenUserManagement();
-                    }}
-                    className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
-                  >
-                    <div className="w-7 h-7 rounded-lg bg-cyan-500/10 text-cyan-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                      <Users className="w-3.5 h-3.5" />
-                    </div>
-                    <span className="truncate">User & Access Management</span>
-                  </button>
+                  {user?.role === 'admin' && onOpenAdminSettings && (
+                    <button
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        onOpenAdminSettings();
+                      }}
+                      className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
+                    >
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        <Shield className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="truncate">Admin & Brand Settings</span>
+                    </button>
+                  )}
+
+                  {user?.role === 'admin' && (
+                    <button
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        onOpenUserManagement();
+                      }}
+                      className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
+                    >
+                      <div className="w-7 h-7 rounded-lg bg-cyan-500/10 text-cyan-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        <Users className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="truncate">User & Access Management</span>
+                    </button>
+                  )}
 
                   <div className="my-1 border-t border-m3-outline-variant/15" />
 

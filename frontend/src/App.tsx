@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { User, Dashboard, DashboardWidget, AgentPersona, LocalRepository } from './types';
-import { authApi, dashboardApi, agentApi } from './api/client';
+import { User, AuthConfig, SystemBranding, Dashboard, DashboardWidget, AgentPersona, LocalRepository } from './types';
+import { authApi, dashboardApi, agentApi, systemApi, setAuthToken } from './api/client';
 import { Navbar } from './components/Navbar';
 import { DashboardHomescreen } from './components/Canvas/DashboardHomescreen';
 import { DashboardCanvas } from './components/Canvas/DashboardCanvas';
@@ -10,6 +10,7 @@ import { DashboardCopilotDrawer } from './components/Canvas/DashboardCopilotDraw
 import { MCPSettingsModal } from './components/Settings/MCPSettingsModal';
 import { UserSettingsModal } from './components/Settings/UserSettingsModal';
 import { UserManagementModal } from './components/Settings/UserManagementModal';
+import { AdminBrandingModal } from './components/Settings/AdminBrandingModal';
 import { DuckDBConsoleModal } from './components/Settings/DuckDBConsoleModal';
 import { AgentInstructionsModal } from './components/Settings/AgentInstructionsModal';
 import { RepositoryManagerModal } from './components/Settings/RepositoryManagerModal';
@@ -22,6 +23,9 @@ import { Loader2 } from 'lucide-react';
 export const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
+  const [branding, setBranding] = useState<SystemBranding>({ app_name: 'AI Studio', logo_url: '' });
+  const [adminBrandingOpen, setAdminBrandingOpen] = useState(false);
 
   // Top Nav Tab: 'chat' (Agentic Chat), 'my' (My Workspace), 'public' (Public Workspace), 'repos' (Repositories & Worktrees), or 'studio' (Code Studio)
   const [activeNavTab, setActiveNavTab] = useState<'chat' | 'my' | 'public' | 'repos' | 'studio'>(() => {
@@ -95,10 +99,35 @@ export const App: React.FC = () => {
     }
   }, [activeNavTab, currentView, activeDashboard?.id]);
 
-  // Check auth state on mount
+  // Check auth state on mount and process OIDC callback token
   useEffect(() => {
+    // 1. Process URL token query parameter from SSO callback
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const tokenParam = urlParams.get('token');
+      if (tokenParam) {
+        setAuthToken(tokenParam);
+        // Clean URL to prevent sharing token in query string
+        const cleanUrl = window.location.pathname + (window.location.hash || '');
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+    } catch (e) {
+      console.error('Failed to parse URL token:', e);
+    }
+
+    // 2. Fetch public system branding
+    systemApi
+      .getBranding()
+      .then((b) => setBranding(b))
+      .catch((e) => console.error('Failed to load branding:', e));
+
+    // 3. Fetch auth configuration & current user session
     authApi
-      .me()
+      .getConfig()
+      .then((cfg) => {
+        setAuthConfig(cfg);
+        return authApi.me();
+      })
       .then((u) => {
         setUser(u);
         loadInitialData();
@@ -381,6 +410,7 @@ export const App: React.FC = () => {
       {/* Top App Bar with Antigravity Geometric Glyph & User Avatar */}
       <Navbar
         user={user}
+        branding={branding}
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
         onNavigateHome={() => {
@@ -399,6 +429,7 @@ export const App: React.FC = () => {
         onOpenAgentInstructions={() => setAgentInstructionsOpen(true)}
         onOpenRepoManager={() => setRepoManagerOpen(true)}
         onOpenUserManagement={() => setUserMgmtOpen(true)}
+        onOpenAdminSettings={() => setAdminBrandingOpen(true)}
         onOpenDuckDBConsole={() => setDuckdbConsoleOpen(true)}
         onLogout={handleLogout}
       />
@@ -582,6 +613,13 @@ export const App: React.FC = () => {
         currentUser={user}
       />
 
+      <AdminBrandingModal
+        isOpen={adminBrandingOpen}
+        onClose={() => setAdminBrandingOpen(false)}
+        currentBranding={branding}
+        onBrandingUpdated={(newBranding) => setBranding(newBranding)}
+      />
+
       <DuckDBConsoleModal
         isOpen={duckdbConsoleOpen}
         onClose={() => setDuckdbConsoleOpen(false)}
@@ -593,7 +631,7 @@ export const App: React.FC = () => {
       />
 
       {/* Login Modal if unauthenticated */}
-      {!user && <LoginModal onSuccess={handleLoginSuccess} />}
+      {!user && <LoginModal authConfig={authConfig} branding={branding} onSuccess={handleLoginSuccess} />}
     </div>
   );
 };

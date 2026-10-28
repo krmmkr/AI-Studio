@@ -7,7 +7,14 @@ from cryptography.fernet import Fernet
 from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from backend.app.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRATION_MINUTES
+from backend.app.config import (
+    JWT_SECRET,
+    JWT_ALGORITHM,
+    JWT_EXPIRATION_MINUTES,
+    is_auth_enabled,
+    DEFAULT_ADMIN_EMAIL,
+    DEFAULT_ADMIN_PASSWORD,
+)
 from backend.app.database import get_db
 from backend.app.models import User
 
@@ -63,6 +70,20 @@ def decode_access_token(token: str) -> dict | None:
     except jwt.PyJWTError:
         return None
 
+def get_dev_default_user(db: Session) -> User:
+    """Retrieves or provisions the default administrator for local development and testing when AUTH is disabled."""
+    user = db.query(User).filter(User.email == DEFAULT_ADMIN_EMAIL).first()
+    if not user:
+        user = User(
+            email=DEFAULT_ADMIN_EMAIL,
+            hashed_password=hash_password(DEFAULT_ADMIN_PASSWORD),
+            role="admin",
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     token: str | None = Query(None),
@@ -75,6 +96,9 @@ def get_current_user(
         raw_token = token
 
     if not raw_token:
+        # If AUTH is disabled (e.g. AUTH=false for local dev and testing), allow frictionless access
+        if not is_auth_enabled():
+            return get_dev_default_user(db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication credentials were not provided",
@@ -82,6 +106,8 @@ def get_current_user(
         )
     payload = decode_access_token(raw_token)
     if not payload:
+        if not is_auth_enabled():
+            return get_dev_default_user(db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired authentication token",
@@ -89,6 +115,8 @@ def get_current_user(
         )
     user_id = payload.get("sub")
     if user_id is None:
+        if not is_auth_enabled():
+            return get_dev_default_user(db)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
     
     try:
@@ -98,5 +126,7 @@ def get_current_user(
         user = db.query(User).filter(User.email == str(user_id)).first()
 
     if not user:
+        if not is_auth_enabled():
+            return get_dev_default_user(db)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user

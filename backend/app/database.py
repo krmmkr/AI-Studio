@@ -203,5 +203,10 @@ def ensure_db_schema():
                 conn.commit()
             except Exception:
                 pass
+            try:
+                conn.execute(text("CREATE TABLE IF NOT EXISTS system_settings (key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMP);"))
+                conn.commit()
+            except Exception:
+                pass
     except Exception as e:
         logger.debug(f"Schema check notice: {e}")

@@ -4,6 +4,20 @@ export interface User {
   role: string;
 }
 
+export interface SystemBranding {
+  app_name: string;
+  logo_url: string;
+}
+
+export interface AuthConfig {
+  auth: boolean;
+  auth_enabled: boolean;
+  sso_enabled: boolean;
+  oidc_configured: boolean;
+  login_url: string;
+  default_admin_email?: string;
+}
+
 export interface AgentPersona {
   id: string;
   name: string;

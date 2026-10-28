@@ -1,4 +1,4 @@
-import { User, MCPConfig, Dashboard, DashboardWidget, DashboardComment, ChatSession, ChatMessage, AgentPersona, LocalRepository, DatasetProposal, UserInquiry, ChatUsageMetadata, ChatAttachment } from '../types';
+import { User, AuthConfig, SystemBranding, MCPConfig, Dashboard, DashboardWidget, DashboardComment, ChatSession, ChatMessage, AgentPersona, LocalRepository, DatasetProposal, UserInquiry, ChatUsageMetadata, ChatAttachment } from '../types';
 
 const TOKEN_KEY = 'antigravity_token';
 
@@ -35,6 +35,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
 // Authentication
 export const authApi = {
+  getConfig: (): Promise<AuthConfig> => request<AuthConfig>('/api/auth/config'),
   login: async (email: string, password: string): Promise<{ access_token: string; user: User }> => {
     const res = await request<{ access_token: string; user: User }>('/api/auth/login', {
       method: 'POST',
@@ -44,10 +45,7 @@ export const authApi = {
     return res;
   },
   me: async (): Promise<User> => {
-    const token = getAuthToken();
-    if (!token) {
-      throw new Error('Not authenticated');
-    }
+    // Calls /api/auth/me (backend auto-resolves dev default user when AUTH=false)
     return request<User>('/api/auth/me');
   },
   logout: () => {
@@ -68,6 +66,16 @@ export const authApi = {
   deleteUser: (userId: number) =>
     request<{ status: string; id: number }>(`/api/auth/users/${userId}`, {
       method: 'DELETE',
+    }),
+};
+
+// System & Brand Configuration
+export const systemApi = {
+  getBranding: (): Promise<SystemBranding> => request<SystemBranding>('/api/system/branding'),
+  updateBranding: (data: { app_name?: string; logo_url?: string }): Promise<SystemBranding> =>
+    request<SystemBranding>('/api/system/branding', {
+      method: 'PUT',
+      body: JSON.stringify(data),
     }),
 };
 

@@ -199,7 +199,19 @@ def seed_database(db: Session, force_mock: bool = False):
         db.commit()
 
     # Discover and sync real cloned repositories and clean obsolete artifacts
-    sync_real_disk_repositories(db, remove_fake_if_clean=True)
+    sync_real_disk_repositories(db, remove_fake_if_clean=not force_mock)
+    if force_mock and db.query(LocalRepository).count() == 0:
+        db.add(
+            LocalRepository(
+                name="main-service",
+                remote_url="https://github.com/company/main-service.git",
+                local_path=str(REPOS_DIR / "main-service"),
+                clone_type="full",
+                default_branch="main",
+                last_synced_at=datetime.datetime.utcnow(),
+            )
+        )
+        db.commit()
 
     # Ensure a clean default empty dashboard exists for admin if they have none
     existing_dash = db.query(Dashboard).filter(Dashboard.user_id == admin.id).first()
