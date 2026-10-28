@@ -132,7 +132,12 @@ def test_production_security_and_stability():
     res_q4 = client.post("/api/duckdb/query", json={"sql": q_attack2}, headers=admin_headers)
     assert res_q4.status_code == 400
     assert "pragma" in res_q4.json()["detail"].lower()
-    print("✓ DuckDB SQL Guard (string-literal aware + attack prevention) passed")
+    # 4e. Arbitrary filesystem table function attacks must be blocked
+    q_attack3 = "SELECT * FROM read_csv('/etc/passwd');"
+    res_q5 = client.post("/api/duckdb/query", json={"sql": q_attack3}, headers=admin_headers)
+    assert res_q5.status_code == 400
+    assert "outside the authorized datasets" in res_q5.json()["detail"].lower()
+    print("✓ DuckDB SQL Guard (string-literal aware + attack prevention + arbitrary file isolation) passed")
 
     # 5. Test Dataset Deletion Support
     from backend.app.services.duckdb_service import duckdb_service

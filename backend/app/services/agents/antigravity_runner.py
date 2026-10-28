@@ -170,6 +170,64 @@ async def start_auth_proxy(target_base_url: str, api_key: str):
     return server, server_task, proxy_url
 
 
+def resolve_thinking_level(level_str: str | None) -> Any:
+    """Maps a user-selected string into a native Antigravity ThinkingLevel enum."""
+    if not level_str:
+        return None
+    from google.antigravity.models import ThinkingLevel
+    cleaned = level_str.strip().upper().replace("-", "_")
+    return getattr(ThinkingLevel, cleaned, None)
+
+
+def parse_multimodal_attachment(att: dict[str, Any]) -> Any:
+    """Converts a raw attachment dict (base64 data, URL, or local path) into an Antigravity Image or Document."""
+    import base64
+    import google.antigravity as agy
+
+    name = att.get("name") or "attachment"
+    mime_type = att.get("mime_type") or "application/octet-stream"
+    raw_data = att.get("data")
+    path_val = att.get("path")
+
+    if path_val:
+        return agy.from_file(path_val, description=name)
+
+    if not raw_data:
+        return None
+
+    if isinstance(raw_data, str) and raw_data.startswith("data:"):
+        header, encoded = raw_data.split(",", 1)
+        if ";base64" in header:
+            mime_type = header.split(";")[0].replace("data:", "")
+            data_bytes = base64.b64decode(encoded)
+        else:
+            data_bytes = encoded.encode("utf-8")
+    elif isinstance(raw_data, str):
+        try:
+            data_bytes = base64.b64decode(raw_data)
+        except Exception:
+            data_bytes = raw_data.encode("utf-8")
+    elif isinstance(raw_data, (bytes, bytearray)):
+        data_bytes = bytes(raw_data)
+    else:
+        return None
+
+    return agy.from_bytes(data_bytes, mime_type=mime_type, description=name)
+
+
+def format_usage_metadata(usage: Any) -> dict[str, int] | None:
+    """Normalizes Antigravity SDK UsageMetadata into frontend-friendly token metrics."""
+    if not usage:
+        return None
+    return {
+        "prompt_tokens": getattr(usage, "prompt_token_count", 0) or 0,
+        "candidates_tokens": getattr(usage, "candidates_token_count", 0) or 0,
+        "thoughts_tokens": getattr(usage, "thoughts_token_count", 0) or 0,
+        "cached_tokens": getattr(usage, "cached_content_token_count", 0) or 0,
+        "total_tokens": getattr(usage, "total_token_count", 0) or 0,
+    }
+
+
 async def stream_with_antigravity_sdk(
     user_message: str,
     mcp_configs: list[MCPConfig],
@@ -186,6 +244,12 @@ async def stream_with_antigravity_sdk(
     model_override: str | None = None,
     parent_context: str = "",
     parent_session_id: str | None = None,
+    repo_id: int | None = None,
+    worktree_path: str | None = None,
+    worktree_branch: str | None = None,
+    session_type: str | None = None,
+    thinking_level: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     from google.antigravity import (
         LocalAgentConfig,
@@ -194,7 +258,7 @@ async def stream_with_antigravity_sdk(
         CustomSystemInstructions,
         CompactionConfig,
     )
-    from google.antigravity.models import ModelTarget, GeminiAPIEndpoint
+    from google.antigravity.models import ModelTarget, GeminiAPIEndpoint, GeminiModelOptions
     from google.antigravity.types import (
         McpStreamableHttpServer,
         Thought,
@@ -219,12 +283,24 @@ async def stream_with_antigravity_sdk(
         history_context=history_context,
         parent_context=parent_context,
         parent_session_id=parent_session_id,
+        repo_id=repo_id,
+        worktree_path=worktree_path,
+        worktree_branch=worktree_branch,
+        session_type=session_type,
     )
 
     emitted_canvas_actions: list[dict[str, Any]] = []
     emitted_proposals: list[dict[str, Any]] = []
     emitted_widget_ids: set[str] = set()
-    tools = build_agent_tools(current_dashboard_id, emitted_canvas_actions, emitted_proposals)
+    tools = build_agent_tools(
+        current_dashboard_id,
+        emitted_canvas_actions,
+        emitted_proposals,
+        current_repo_id=repo_id,
+        current_worktree_path=worktree_path,
+        current_worktree_branch=worktree_branch,
+        session_id=session_id,
+    )
 
     mcp_servers = []
     for cfg in mcp_configs:
@@ -279,6 +355,20 @@ async def stream_with_antigravity_sdk(
         last_step_error: str | None = None
         last_stop_reason_str: str = ""
 
+        # Prepare multimodal attachments and thinking options
+        media_items: list[Any] = []
+        if attachments:
+            for att in attachments:
+                try:
+                    parsed = parse_multimodal_attachment(att)
+                    if parsed:
+                        media_items.append(parsed)
+                except Exception as parse_err:
+                    logger.warning(f"Failed to parse multimodal attachment: {parse_err}")
+
+        gemini_thinking = resolve_thinking_level(thinking_level)
+        gemini_options = GeminiModelOptions(thinking_level=gemini_thinking) if gemini_thinking else None
+
         for attempt_idx, model_name in enumerate(models_to_try):
             if execution_ctx is not None and execution_ctx.is_cancelled:
                 break
@@ -294,6 +384,7 @@ async def stream_with_antigravity_sdk(
                                 endpoint=GeminiAPIEndpoint(
                                     base_url=effective_base_url,
                                     api_key=effective_api_key or None,
+                                    options=gemini_options,
                                 ),
                             )
                         ],
@@ -342,32 +433,58 @@ async def stream_with_antigravity_sdk(
                         env=env_vars,
                     )
             else:
-                config = LocalAgentConfig(
-                    system_instructions=CustomSystemInstructions(text=combined_instructions),
-                    model=model_name,
-                    api_key=effective_api_key or None,
-                    tools=tools,
-                    mcp_servers=mcp_servers,
-                    workspaces=[str(REPOS_DIR)],
-                    conversation_id=attempt_conv_id,
-                    session_continuation_mode=SessionContinuationMode.CREATE_OR_RESUME,
-                    save_dir=session_store.antigravity_save_dir,
-                    app_data_dir=session_store.antigravity_app_data_dir,
-                    retry_config=RetryConfig(
-                        api_retry=ModelAPIRetryConfig(
-                            max_retries=4,
-                            initial_sleep_duration_ms=3000,
-                            exponential_multiplier=1.5,
-                        )
-                    ),
-                    compaction_config=CompactionConfig(),
-                )
+                if gemini_options:
+                    endpoint = GeminiAPIEndpoint(
+                        api_key=effective_api_key or None,
+                        options=gemini_options,
+                    )
+                    config = LocalAgentConfig(
+                        models=[ModelTarget(name=model_name, endpoint=endpoint)],
+                        system_instructions=CustomSystemInstructions(text=combined_instructions),
+                        tools=tools,
+                        mcp_servers=mcp_servers,
+                        workspaces=[str(REPOS_DIR)],
+                        conversation_id=attempt_conv_id,
+                        session_continuation_mode=SessionContinuationMode.CREATE_OR_RESUME,
+                        save_dir=session_store.antigravity_save_dir,
+                        app_data_dir=session_store.antigravity_app_data_dir,
+                        retry_config=RetryConfig(
+                            api_retry=ModelAPIRetryConfig(
+                                max_retries=4,
+                                initial_sleep_duration_ms=3000,
+                                exponential_multiplier=1.5,
+                            )
+                        ),
+                        compaction_config=CompactionConfig(),
+                    )
+                else:
+                    config = LocalAgentConfig(
+                        system_instructions=CustomSystemInstructions(text=combined_instructions),
+                        model=model_name,
+                        api_key=effective_api_key or None,
+                        tools=tools,
+                        mcp_servers=mcp_servers,
+                        workspaces=[str(REPOS_DIR)],
+                        conversation_id=attempt_conv_id,
+                        session_continuation_mode=SessionContinuationMode.CREATE_OR_RESUME,
+                        save_dir=session_store.antigravity_save_dir,
+                        app_data_dir=session_store.antigravity_app_data_dir,
+                        retry_config=RetryConfig(
+                            api_retry=ModelAPIRetryConfig(
+                                max_retries=4,
+                                initial_sleep_duration_ms=3000,
+                                exponential_multiplier=1.5,
+                            )
+                        ),
+                        compaction_config=CompactionConfig(),
+                    )
 
             last_step_error = None
             has_gated_pause = False
             try:
                 async with Agent(config) as agent:
-                    chat_resp = await agent.chat(user_message)
+                    chat_input: Any = [user_message, *media_items] if media_items else user_message
+                    chat_resp = await agent.chat(chat_input)
 
                     if execution_ctx is not None:
                         execution_ctx.add_cancel_callback(chat_resp.cancel)
@@ -376,6 +493,12 @@ async def stream_with_antigravity_sdk(
                         async for chunk in chat_resp.chunks:
                             if execution_ctx is not None and execution_ctx.is_cancelled:
                                 break
+
+                            chunk_usage = getattr(chunk, "usage_metadata", None)
+                            if chunk_usage:
+                                formatted_u = format_usage_metadata(chunk_usage)
+                                if formatted_u:
+                                    yield {"type": "usage", "usage": formatted_u}
 
                             if isinstance(chunk, Thought):
                                 thought_str = getattr(chunk, "text", getattr(chunk, "thought", ""))
@@ -421,6 +544,13 @@ async def stream_with_antigravity_sdk(
                     except Exception as chunk_err:
                         logger.warning(f"Notice during chunk stream ({model_name}): {chunk_err}")
                         last_step_error = str(chunk_err)
+
+                    # Yield final token usage metrics if captured by turn
+                    resp_usage = getattr(chat_resp, "usage_metadata", None)
+                    if resp_usage:
+                        formatted_u = format_usage_metadata(resp_usage)
+                        if formatted_u:
+                            yield {"type": "usage", "usage": formatted_u}
 
                     while emitted_canvas_actions:
                         action_ev = emitted_canvas_actions.pop(0)

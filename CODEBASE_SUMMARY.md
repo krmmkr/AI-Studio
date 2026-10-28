@@ -1,6 +1,6 @@
-# Antigravity Cockpit - Codebase Summary
+# AI Studio - Codebase Summary
 
-**AI-native engineering cockpit** that combines the Google Antigravity SDK, Model Context Protocol (MCP) tooling, and a live dashboard canvas for code review intelligence and headless BI.
+**AI-native development workspace** that combines the Google Antigravity SDK, Model Context Protocol (MCP) tooling, and a live dashboard canvas for code review intelligence and headless BI.
 
 ## What It Is
 

@@ -254,6 +254,10 @@ def build_layered_system_prompt(
     history_context: str = "",
     parent_context: str = "",
     parent_session_id: str | None = None,
+    repo_id: int | None = None,
+    worktree_path: str | None = None,
+    worktree_branch: str | None = None,
+    session_type: str | None = None,
 ) -> str:
     """
     Constructs the canonical multi-layer system prompt matching Agor's robust context architecture:
@@ -262,12 +266,34 @@ def build_layered_system_prompt(
     Layer 3: Resolved Persona (Resolved via explicit ID -> default persona fallback)
     Layer 4: Dashboard & Bound Datasource Boundary (Title, Description/Goal, Bound Data Sources, Active Canvas Widgets)
     Layer 5: Localized Spatial Pin / Widget Context (if prompt originates from a pin or widget drawer)
-    Layer 6: Sub-task Context (if branched from a main dashboard thread)
+    Layer 6: Worktree & Isolated Feature Branch Context (if conversation is anchored to a git worktree)
+    Layer 7: Sub-task Context (if branched from a main dashboard thread)
     """
     persona_name, persona_instructions = resolve_persona_instructions(agent_id)
     domain_context = load_agent_context()
     catalog_summary = get_catalog_context_summary()
     dash_context, active_widgets, active_comments, bound_sources = get_dashboard_context(dashboard_id)
+
+    worktree_context_layer = ""
+    if repo_id or worktree_path or worktree_branch:
+        repo_name = ""
+        try:
+            from backend.app.database import SessionLocal
+            from backend.app.models import LocalRepository
+            with SessionLocal() as db:
+                r_obj = db.query(LocalRepository).filter(LocalRepository.id == repo_id).first() if repo_id else None
+                if r_obj:
+                    repo_name = r_obj.name
+        except Exception:
+            pass
+
+        worktree_context_layer = (
+            f"\n[ACTIVE GIT REPOSITORY & WORKTREE CONTEXT - ISOLATED BRANCH]\n"
+            f"Repository: '{repo_name or 'Current Repository'}' (ID: {repo_id})\n"
+            f"Active Branch / Worktree: '{worktree_branch or 'main'}'\n"
+            f"Filesystem Worktree Path: '{worktree_path or 'repository root'}'\n"
+            f"Execution Boundary: All file inspections, code searches, file modifications (`propose_file_edit`), and tests (`execute_approved_repository_command`) run INSIDE this dedicated worktree without dirtying the root main branch! When proposing fixes or code updates, relative paths are relative to this worktree root."
+        )
 
     pin_context = ""
     if pin_id:
@@ -303,7 +329,8 @@ def build_layered_system_prompt(
     core_rules = (
         "## Agent Capabilities & Execution Rules:\n"
         "1. Dynamic Git & Codebase Extraction: There are NO pre-baked telemetry tables (`github_commits` or `github_contributors`) unless explicitly created. Instead, use `extract_repository_dataset_records` to dynamically extract structured records tailored to the user's requirement (e.g., `mode='features_and_modules'` for features/components/routes and who authored them, `mode='issues_todos_and_fixes'` for code TODOs/FIXMEs and bugfix commits with authors, `mode='file_ownership_and_churn'` for module/file ownership, or `mode='git_search'` for custom git history queries).\n"
-        "2. Deep Codebase Intelligence (Autonomous Read): Use `list_repository_files`, `search_repository_code`, `read_repository_file`, `analyze_code_complexity`, and `analyze_git_repository` to inspect source code, AST complexity, and repository history.\n"
+        "2. Repository & Worktree Lifecycle Management: Use `clone_repository` to clone remote GitHub repositories to disk and register them in the catalog. Use `create_feature_worktree(repo=..., branch_name=...)` to autonomously provision an isolated git worktree branch when fixing a bug or implementing a feature—subsequent file edits, inspections, and terminal commands in the conversation will automatically target this isolated worktree without dirtying the main branch!\n"
+        "3. Deep Codebase Intelligence (Autonomous Read): Use `list_repository_files`, `search_repository_code`, `read_repository_file`, `analyze_code_complexity`, and `analyze_git_repository` to inspect source code, AST complexity, and repository history.\n"
         "3. Dynamic Schema-Free Dataset Proposals: You can propose ANY custom DuckDB table schema based on the user's request! Call `propose_duckdb_dataset(table_name=..., description=..., records=[...])` (or pass `propose_table_name` directly to `extract_repository_dataset_records`, or pass a `sql_query` transforming an existing table). The user will see an interactive confirmation card with schema, row count, and sample rows to Approve & Create.\n"
         "4. Interactive Human-in-the-Loop Gating (Pause Immediately): When you call any gated proposal or confirmation tool (`propose_duckdb_dataset`, `propose_repository_command`, `propose_file_edit`, `ask_user_confirmation`, or `upsert_chart_widget` / `create_react_widget` when requesting replacement confirmation), you MUST STOP your turn immediately! Do NOT generate redundant conversational text, do NOT guess the user's choice, and do NOT ask duplicate questions in text. The interactive card in the UI presents the action and choice buttons directly to the user. Stop your response and wait for the user's decision.\n"
         "5. Resuming Execution After Approval: When the user approves or declines a proposal, or selects an inquiry option, you will receive their decision as the next turn (e.g., `[APPROVED] ...`, `[DECLINED] ...`, or `[SELECTED OPTION] ...`). Immediately carry out the approved action (e.g. mount the widget with `user_confirmed=True`, query the dataset, run the command) without re-asking questions or re-proposing.\n"
@@ -320,6 +347,7 @@ def build_layered_system_prompt(
         f"### Persona Instructions:\n{persona_instructions}",
         f"### Domain Context & Engineering Intelligence:\n{domain_context}" if domain_context else "",
         f"### Available Local Repositories & Data Catalog:\n{catalog_summary}" if catalog_summary else "",
+        worktree_context_layer,
         dash_context,
         pin_context,
         parent_thread_layer,
@@ -397,6 +425,10 @@ def build_agent_tools(
     current_dashboard_id: str | None,
     emitted_canvas_actions: list[dict[str, Any]],
     emitted_proposals: list[dict[str, Any]] | None = None,
+    current_repo_id: int | None = None,
+    current_worktree_path: str | None = None,
+    current_worktree_branch: str | None = None,
+    session_id: str | None = None,
 ) -> list[Callable[..., Any]]:
     """
     Constructs the suite of Python tool functions for the 4-step GitHub analysis pipeline:
@@ -405,6 +437,11 @@ def build_agent_tools(
     3. Query DuckDB & materialize derived local DuckDB datasets
     4. Create/update interactive ECharts widgets and Markdown report cards on the canvas
     """
+
+    def _resolve_target_dir(repo: str) -> Path:
+        if current_worktree_path and Path(current_worktree_path).is_dir():
+            return Path(current_worktree_path)
+        return resolve_local_repo_path(repo)
 
     def list_repositories_and_datasets() -> dict[str, Any]:
         """Lists all cloned GitHub repositories on disk and all DuckDB analytical tables with schemas."""
@@ -433,6 +470,185 @@ def build_agent_tools(
         """Lists available branches and the active branch for a cloned local GitHub repository."""
         target_path = resolve_local_repo_path(repo)
         return git_service.get_repository_branches(str(target_path))
+
+    def clone_repository(
+        remote_url: str,
+        repo_name: str = "",
+        default_branch: str = "main",
+    ) -> dict[str, Any]:
+        """
+        Clones a remote GitHub or Git repository to disk storage and registers it in the repository catalog.
+        Call this when the user asks to analyze, inspect, or fix code in a repository that is not yet cloned.
+        """
+        nonlocal current_repo_id
+        clean_url = remote_url.strip()
+        if not clean_url:
+            return {"error": "remote_url is required"}
+
+        target_name = repo_name.strip()
+        if not target_name:
+            stem = clean_url.rstrip("/").split("/")[-1]
+            if stem.endswith(".git"):
+                stem = stem[:-4]
+            target_name = stem or "cloned_repo"
+
+        try:
+            safe_name = git_service.sanitize_repo_name(target_name)
+            meta = git_service.clone_repository(
+                name=safe_name,
+                remote_url=clean_url,
+                default_branch=default_branch or "main",
+            )
+            local_path_str = str(meta.get("local_path") or (REPOS_DIR / safe_name))
+
+            from backend.app.database import SessionLocal
+            from backend.app.models import LocalRepository, ChatSession
+            with SessionLocal() as db:
+                repo_obj = db.query(LocalRepository).filter(LocalRepository.name == safe_name).first()
+                if not repo_obj:
+                    repo_obj = LocalRepository(
+                        name=safe_name,
+                        remote_url=clean_url,
+                        local_path=local_path_str,
+                        default_branch=default_branch or "main",
+                        clone_type="full",
+                        sync_status="active",
+                    )
+                    db.add(repo_obj)
+                    db.commit()
+                    db.refresh(repo_obj)
+
+                current_repo_id = repo_obj.id
+
+                if session_id and session_id != "default":
+                    sess = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+                    if sess:
+                        sess.repo_id = repo_obj.id
+                        sess.session_type = "code"
+                        db.commit()
+
+            return {
+                "status": "success",
+                "repo": safe_name,
+                "local_path": local_path_str,
+                "remote_url": clean_url,
+                "default_branch": default_branch or "main",
+                "message": f"Successfully cloned repository '{safe_name}' to disk storage and registered it in the catalog.",
+            }
+        except Exception as e:
+            return {"error": f"Failed to clone repository '{clean_url}': {str(e)}"}
+
+    def create_feature_worktree(
+        repo: str = "",
+        branch_name: str = "",
+        base_branch: str = "main",
+    ) -> dict[str, Any]:
+        """
+        Creates an isolated Git worktree for safely authoring code changes, running tests,
+        and fixing issues without touching or dirtying the primary repository directory.
+        Shares the identical underlying repository .git database while providing an independent
+        working directory, branch, and conflict-free localhost port allocation.
+        Subsequent file edits and terminal commands in this conversation will immediately target this worktree.
+        """
+        nonlocal current_worktree_path, current_worktree_branch, current_repo_id
+        clean_branch = branch_name.strip()
+        if not clean_branch:
+            return {"error": "branch_name is required"}
+
+        target_name = repo.strip() if repo else ""
+        if not target_name and current_repo_id:
+            from backend.app.database import SessionLocal
+            from backend.app.models import LocalRepository
+            with SessionLocal() as db:
+                r = db.query(LocalRepository).filter(LocalRepository.id == current_repo_id).first()
+                if r:
+                    target_name = r.name
+        if not target_name and REPOS_DIR.exists():
+            for p in sorted(REPOS_DIR.iterdir()):
+                if p.is_dir() and not p.name.startswith("."):
+                    target_name = p.name.removesuffix(".git")
+                    break
+
+        try:
+            target_repo_dir = resolve_local_repo_path(target_name)
+            wt = git_service.create_worktree(
+                local_path_or_repo=str(target_repo_dir),
+                new_branch=clean_branch,
+                base_branch=base_branch or "main",
+            )
+            wt_path = wt["worktree_path"]
+
+            from backend.app.database import SessionLocal
+            from backend.app.models import LocalRepository, ChatSession
+            from backend.app.services.port_service import port_manager
+
+            allocated_port = None
+            with SessionLocal() as db:
+                repo_obj = db.query(LocalRepository).filter(
+                    (LocalRepository.name == target_repo_dir.name) | (LocalRepository.local_path == str(target_repo_dir))
+                ).first()
+                r_id = repo_obj.id if repo_obj else current_repo_id
+
+                if r_id:
+                    allocated_port = port_manager.get_or_allocate_port(
+                        db=db,
+                        repo_id=r_id,
+                        worktree_path=wt_path,
+                        repo_name=target_repo_dir.name,
+                        branch=clean_branch,
+                    )
+
+                current_worktree_path = wt_path
+                current_worktree_branch = clean_branch
+                if r_id:
+                    current_repo_id = r_id
+
+                if session_id and session_id != "default":
+                    sess = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+                    if sess:
+                        if r_id:
+                            sess.repo_id = r_id
+                        sess.worktree_path = wt_path
+                        sess.worktree_branch = clean_branch
+                        sess.session_type = "code"
+                        db.commit()
+
+            return {
+                "status": "success",
+                "repo": target_repo_dir.name,
+                "branch": clean_branch,
+                "base_branch": base_branch or "main",
+                "worktree_path": wt_path,
+                "assigned_port": allocated_port,
+                "message": (
+                    f"Successfully created isolated worktree for branch '{clean_branch}' (based on '{base_branch}') "
+                    f"at '{wt_path}' with assigned sandbox port {allocated_port or '$PORT'}. "
+                    f"Subsequent code inspections, file modifications, and test commands in this session now target this isolated worktree."
+                ),
+            }
+        except Exception as e:
+            return {"error": f"Failed to create worktree: {str(e)}"}
+
+    def list_repository_worktrees(repo: str = "") -> dict[str, Any]:
+        """Lists active Git worktrees created for a repository with their branches and paths."""
+        target_name = repo.strip() if repo else ""
+        if not target_name and current_repo_id:
+            from backend.app.database import SessionLocal
+            from backend.app.models import LocalRepository
+            with SessionLocal() as db:
+                r = db.query(LocalRepository).filter(LocalRepository.id == current_repo_id).first()
+                if r:
+                    target_name = r.name
+        try:
+            target_repo_dir = resolve_local_repo_path(target_name)
+            wts = git_service.list_worktrees(str(target_repo_dir))
+            return {
+                "repo": target_repo_dir.name,
+                "worktrees": wts,
+                "count": len(wts),
+            }
+        except Exception as e:
+            return {"error": f"Failed to list worktrees: {str(e)}"}
 
     def analyze_git_repository(repo: str, branch: str = "", limit: int = 1000) -> dict[str, Any]:
         """
@@ -1111,7 +1327,7 @@ def build_agent_tools(
         Lists tracked files in the repository or a specific subfolder, optionally filtered by file extension (.py, .ts, .tsx, etc.).
         Autonomous read tool - executes immediately without user prompt.
         """
-        target_path = resolve_local_repo_path(repo)
+        target_path = _resolve_target_dir(repo)
         args = ["ls-tree", "-r", "--name-only", "HEAD"]
         if directory:
             clean_dir = directory.lstrip("/\\")
@@ -1147,7 +1363,7 @@ def build_agent_tools(
         Supports line pagination (start_line to end_line) to avoid overflowing context.
         Autonomous read tool - executes immediately without user prompt.
         """
-        target_path = resolve_local_repo_path(repo)
+        target_path = _resolve_target_dir(repo)
         clean_rel = file_path.lstrip("/\\")
         if ".." in Path(clean_rel).parts:
             return {"error": f"Access denied: path '{file_path}' traverses outside repository root."}
@@ -1192,7 +1408,7 @@ def build_agent_tools(
         Returns matching file paths, line numbers, and matching code lines.
         Autonomous read tool - executes immediately without user prompt.
         """
-        target_path = resolve_local_repo_path(repo)
+        target_path = _resolve_target_dir(repo)
         if not query.strip():
             return {"error": "Search query cannot be empty."}
         args = ["grep", "-n", "-I", "--max-depth=10", "-e", query]
@@ -1225,7 +1441,7 @@ def build_agent_tools(
         If file_path is empty, scans repository code files to identify the top most complex functions across the codebase.
         Autonomous read tool - executes immediately without user prompt.
         """
-        target_path = resolve_local_repo_path(repo)
+        target_path = _resolve_target_dir(repo)
 
         def analyze_py_source(rel_path: str, src: str) -> list[dict[str, Any]]:
             try:
@@ -1354,7 +1570,7 @@ def build_agent_tools(
         for interactive approval before running it.
         CRITICAL GATED OPERATION: Running tests, build tools, linters, or git mutations MUST call this tool.
         """
-        target_path = resolve_local_repo_path(repo)
+        target_path = _resolve_target_dir(repo)
         inq_id = f"cmd-{uuid.uuid4().hex[:8]}"
         cmd_clean = command.strip()
         approve_label = f"Approve: Run `{cmd_clean}`" if (len(cmd_clean) <= 30 and "\n" not in cmd_clean) else "Approve & Run Command"
@@ -1390,7 +1606,7 @@ def build_agent_tools(
         Executes an approved read-only or authorized shell command inside the repository directory.
         Only call this tool when the user has explicitly confirmed or instructed execution.
         """
-        target_path = resolve_local_repo_path(repo)
+        target_path = _resolve_target_dir(repo)
         forbidden = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:", "> /dev/sda"]
         for f in forbidden:
             if f in command:
@@ -1429,14 +1645,19 @@ def build_agent_tools(
         Presents a proposed file modification or creation to the user for interactive approval.
         CRITICAL GATED OPERATION: Modifying repository code MUST call this tool first so the user can review before applying.
         """
-        target_path = resolve_local_repo_path(repo)
+        target_path = _resolve_target_dir(repo)
         inq_id = f"edit-{uuid.uuid4().hex[:8]}"
         snippet = proposed_content[:1000] + ("\n... [truncated]" if len(proposed_content) > 1000 else "")
+        branch_label = current_worktree_branch or "main"
         inquiry_payload = {
             "id": inq_id,
             "type": "file_edit_approval",
-            "question": f"Apply proposed changes to '{file_path}' in repo '{target_path.name}'?",
-            "context": f"File: `{file_path}`\nRationale: {rationale or 'Code update'}\n\n```\n{snippet}\n```",
+            "repo": target_path.name,
+            "file_path": file_path,
+            "worktree_path": str(target_path) if current_worktree_path else "",
+            "worktree_branch": branch_label,
+            "question": f"Apply proposed changes to '{file_path}' in branch '{branch_label}'?",
+            "context": f"File: `{file_path}`\nBranch: `{branch_label}`\nRationale: {rationale or 'Code update'}\n\n```\n{snippet}\n```",
             "options": [f"Approve: Update `{file_path}`", "Decline"],
             "status": "pending",
         }
@@ -1450,7 +1671,8 @@ def build_agent_tools(
             "inquiry_id": inq_id,
             "repo": target_path.name,
             "file_path": file_path,
-            "message": f"Proposed edit for `{file_path}` presented to user for interactive confirmation. STOP YOUR TURN NOW and wait for user approval.",
+            "worktree_branch": branch_label,
+            "message": f"Proposed edit for `{file_path}` in `{branch_label}` presented to user for interactive confirmation. STOP YOUR TURN NOW and wait for user approval.",
         }
 
     def apply_approved_file_edit(
@@ -1462,7 +1684,7 @@ def build_agent_tools(
         Applies an approved file modification or creation inside a working-tree repository.
         Only call this tool after the user has explicitly confirmed `propose_file_edit` or requested the file write.
         """
-        target_path = resolve_local_repo_path(repo).resolve()
+        target_path = _resolve_target_dir(repo).resolve()
         is_bare = (target_path / "HEAD").is_file() and not (target_path / ".git").exists()
         if is_bare:
             return {"error": f"Repository '{target_path.name}' is a bare clone without a working tree; file edits require a full working-tree clone."}
@@ -1488,9 +1710,75 @@ def build_agent_tools(
         except Exception as e:
             return {"error": f"Failed to write file '{clean_rel}': {e}"}
 
+    def propose_git_commit_and_push(
+        repo: str,
+        commit_message: str,
+        branch: str = "",
+    ) -> dict[str, Any]:
+        """
+        Presents a Git commit and push request to the user for interactive authorization.
+        Stages modified files in the active worktree or repository, creates a git commit, and prepares to push to remote.
+        """
+        target_path = _resolve_target_dir(repo)
+        inq_id = f"push-{uuid.uuid4().hex[:8]}"
+        target_branch = branch or current_worktree_branch or "main"
+        inquiry_payload = {
+            "id": inq_id,
+            "type": "git_push_approval",
+            "repo": target_path.name,
+            "branch": target_branch,
+            "commit_message": commit_message,
+            "question": f"Commit changes and push branch '{target_branch}' to remote?",
+            "context": f"Repository: `{target_path.name}`\nBranch: `{target_branch}`\nCommit Message: `{commit_message}`",
+            "options": [f"Approve & Push to `{target_branch}`", "Decline"],
+            "status": "pending",
+        }
+        if emitted_proposals is not None:
+            emitted_proposals.append({
+                "type": "user_inquiry",
+                "inquiry": inquiry_payload,
+            })
+        return {
+            "status": "approval_requested",
+            "inquiry_id": inq_id,
+            "repo": target_path.name,
+            "branch": target_branch,
+            "commit_message": commit_message,
+            "message": f"Git commit & push to branch `{target_branch}` presented to user for interactive confirmation. STOP YOUR TURN NOW and wait for user approval.",
+        }
+
+    def execute_git_commit_and_push(
+        repo: str,
+        commit_message: str,
+        branch: str = "",
+    ) -> dict[str, Any]:
+        """
+        Executes git commit and git push on the active worktree or repository branch using configured GitHub credentials.
+        Only call this after the user has explicitly confirmed 'propose_git_commit_and_push'.
+        """
+        target_path = _resolve_target_dir(repo)
+        target_branch = branch or current_worktree_branch or "main"
+        try:
+            rc, stdout, stderr = git_service._run_git(["add", "-A"], cwd=target_path)
+            rc, stdout, stderr = git_service._run_git(["commit", "-m", commit_message], cwd=target_path)
+            rc, stdout, stderr = git_service._run_git(["push", "-u", "origin", target_branch], cwd=target_path)
+            if rc != 0:
+                return {"error": f"Git push failed: {stderr or stdout}"}
+            return {
+                "status": "success",
+                "branch": target_branch,
+                "commit_message": commit_message,
+                "details": f"Successfully committed and pushed to origin/{target_branch}.",
+            }
+        except Exception as e:
+            return {"error": f"Failed to push to remote: {e}"}
+
     return [
         list_repositories_and_datasets,
         list_git_branches,
+        clone_repository,
+        create_feature_worktree,
+        list_repository_worktrees,
         analyze_git_repository,
         extract_repository_dataset_records,
         list_repository_files,
@@ -1501,6 +1789,8 @@ def build_agent_tools(
         execute_approved_repository_command,
         propose_file_edit,
         apply_approved_file_edit,
+        propose_git_commit_and_push,
+        execute_git_commit_and_push,
         query_duckdb,
         propose_duckdb_dataset,
         ask_user_confirmation,

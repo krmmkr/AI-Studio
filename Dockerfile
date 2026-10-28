@@ -1,5 +1,5 @@
 # ==============================================================================
-# Multi-Stage Production Dockerfile for Antigravity Cockpit
+# Multi-Stage Production Dockerfile for AI Studio
 # ==============================================================================
 
 # Stage 1: Build React 18 Frontend
@@ -42,7 +42,7 @@ RUN mkdir -p /app/local_data/storage \
              /app/local_data/derived_datasets \
              /app/local_data/agent_sessions \
              /app/local_data/antigravity_app_data \
-    && chmod -R 777 /app/local_data
+    && chmod -R 755 /app/local_data
 
 # Environment defaults
 ENV ENVIRONMENT=production
@@ -56,5 +56,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://127.0.0.1:8000/healthz || exit 1
 
-# Run Uvicorn server
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Run Uvicorn server (1 worker to maintain in-process DuckDB and execution manager state)
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

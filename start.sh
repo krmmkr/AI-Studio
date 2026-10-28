@@ -9,7 +9,7 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 
 echo "=========================================================="
-echo " Starting Antigravity Cockpit (FastAPI + React SPA)"
+echo " Starting AI Studio (FastAPI + React SPA)"
 echo " Server binding: http://${HOST}:${PORT}"
 echo " Default Login : admin@antigravity.io / antigravity123"
 echo " Workers       : ${WORKERS}"

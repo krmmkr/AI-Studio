@@ -36,6 +36,10 @@ function compileDynamicComponent(rawCode: string) {
   }).code;
 
   const wrapper = `
+    // Sandbox sensitive storage primitives to prevent credential/token theft
+    const localStorage = undefined;
+    const sessionStorage = undefined;
+    const indexedDB = undefined;
     const { useState, useEffect, useMemo, useCallback, useRef, useId } = React;
     const Icons = IconProxy;
     const {

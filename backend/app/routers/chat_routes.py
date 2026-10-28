@@ -4,6 +4,9 @@ import datetime
 import asyncio
 import re
 import logging
+import shutil
+import sqlite3
+from pathlib import Path
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -15,11 +18,20 @@ from backend.app.database import get_db, SessionLocal
 from backend.app.models import User, ChatSession, ChatMessage, MCPConfig, Dashboard
 from backend.app.services.antigravity_agent import antigravity_agent
 from backend.app.services.agents.execution_manager import execution_manager
+from backend.app.services.agents.session_store import session_store
 from backend.app.services.duckdb_service import duckdb_service
 
 logger = logging.getLogger("chat_routes")
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+def to_iso_utc(dt: datetime.datetime | None) -> str | None:
+    """Returns an RFC 3339 / ISO 8601 UTC string explicitly terminating in Z."""
+    if not dt:
+        return None
+    iso = dt.isoformat()
+    return iso if iso.endswith("Z") or "+" in iso else f"{iso}Z"
 
 
 def derive_title_from_prompt(prompt: str, max_length: int = 48) -> str:
@@ -40,26 +52,40 @@ def derive_title_from_prompt(prompt: str, max_length: int = 48) -> str:
     return f"{truncated}…"
 
 
-def _parse_proposals_json(raw_json: str | None) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
-    """Gracefully extracts proposals and user inquiries from persisted JSON column."""
+def _parse_proposals_json(raw_json: str | None) -> tuple[
+    list[dict[str, Any]] | None,
+    list[dict[str, Any]] | None,
+    dict[str, Any] | None,
+    list[dict[str, Any]] | None,
+]:
+    """Gracefully extracts proposals, user inquiries, token usage, and attachments from persisted JSON column."""
     if not raw_json:
-        return None, None
+        return None, None, None, None
     try:
         data = json.loads(raw_json)
         if isinstance(data, dict):
-            return data.get("proposals"), data.get("inquiries")
+            return (
+                data.get("proposals"),
+                data.get("inquiries"),
+                data.get("usage"),
+                data.get("attachments"),
+            )
         elif isinstance(data, list):
             props = [x for x in data if x.get("type") == "dataset" or "sql_query" in x]
             inqs = [x for x in data if "question" in x or x.get("type") in ("question", "recommendation")]
-            return props or None, inqs or None
+            return props or None, inqs or None, None, None
     except Exception:
         pass
-    return None, None
+    return None, None, None, None
 
 class ChatSessionCreate(BaseModel):
     title: str | None = "New Exploration"
     dashboard_id: str | None = None
-    scope: str | None = "dashboard"
+    session_type: str | None = None
+    repo_id: int | None = None
+    worktree_path: str | None = None
+    worktree_branch: str | None = None
+    scope: str | None = None
     pin_id: int | None = None
     widget_id: str | None = None
     agent_id: str | None = "general"
@@ -72,11 +98,22 @@ class ForkSessionPayload(BaseModel):
 
 class AttachDashboardPayload(BaseModel):
     dashboard_id: str | None = None
+    session_type: str | None = "dashboard"
+
+class AttachWorktreePayload(BaseModel):
+    repo_id: int | None = None
+    worktree_path: str | None = None
+    worktree_branch: str | None = None
+    session_type: str | None = "code"
 
 class PromptPayload(BaseModel):
     message: str
     dashboard_id: str | None = None
     current_dashboard_id: str | None = None
+    session_type: str | None = None
+    repo_id: int | None = None
+    worktree_path: str | None = None
+    worktree_branch: str | None = None
     agent_id: str | None = "general"
     scope: str | None = None
     pin_id: int | None = None
@@ -86,6 +123,8 @@ class PromptPayload(BaseModel):
     base_url: str | None = None
     model: str | None = None
     parent_session_id: str | None = None
+    thinking_level: str | None = None
+    attachments: list[dict[str, Any]] | None = None
 
 
 @router.get("/runtime")
@@ -146,6 +185,7 @@ def get_runtime_info(current_user: User = Depends(get_current_user)):
 def list_sessions(
     dashboard_id: str | None = None,
     scope: str | None = None,
+    include_archived: bool = True,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -156,6 +196,9 @@ def list_sessions(
     elif not dashboard_id:
         # Hide localized pin popup chats from the main sidebar to prevent clutter
         query = query.filter(or_(ChatSession.scope != "pin", ChatSession.scope.is_(None)))
+
+    if not include_archived:
+        query = query.filter(ChatSession.is_archived == False)
 
     sessions = query.order_by(ChatSession.updated_at.desc()).all()
 
@@ -168,8 +211,24 @@ def list_sessions(
             for d in dashboards:
                 if d.id in s.id:
                     s.dashboard_id = d.id
+                    s.session_type = "dashboard"
                     db.commit()
                     break
+        # Auto-reconcile session_type:
+        if s.session_type == "general":
+            if s.dashboard_id or s.repo_id:
+                s.dashboard_id = None
+                s.repo_id = None
+                s.worktree_path = None
+                s.worktree_branch = None
+                db.commit()
+        elif s.repo_id or s.worktree_branch or s.worktree_path:
+            if s.session_type != "code":
+                s.session_type = "code"
+                db.commit()
+        elif s.dashboard_id and s.session_type != "dashboard" and not s.repo_id:
+            s.session_type = "dashboard"
+            db.commit()
 
     if dashboard_id:
         sessions = [s for s in sessions if s.dashboard_id == dashboard_id]
@@ -180,6 +239,11 @@ def list_sessions(
         {
             "id": s.id,
             "title": s.title,
+            "session_type": s.session_type or "general",
+            "repo_id": s.repo_id,
+            "repo_name": s.repository.name if s.repository else None,
+            "worktree_path": s.worktree_path,
+            "worktree_branch": s.worktree_branch,
             "agent_id": s.agent_id or "general",
             "parent_session_id": s.parent_session_id,
             "parent_title": parent_map.get(s.parent_session_id),
@@ -191,8 +255,9 @@ def list_sessions(
             "scope": s.scope or "dashboard",
             "pin_id": s.pin_id,
             "widget_id": s.widget_id,
-            "created_at": s.created_at.isoformat() if s.created_at else None,
-            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "is_archived": bool(getattr(s, "is_archived", False)),
+            "created_at": to_iso_utc(s.created_at),
+            "updated_at": to_iso_utc(s.updated_at),
             "message_count": len(s.messages)
         }
         for s in sessions
@@ -201,17 +266,30 @@ def list_sessions(
 @router.post("/sessions")
 def create_session(payload: ChatSessionCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     session_id = str(uuid.uuid4())
+    inferred_type = payload.session_type
+    if payload.repo_id or payload.worktree_branch or payload.worktree_path or payload.scope == "worktree":
+        inferred_type = "code"
+    elif payload.dashboard_id or payload.pin_id or payload.scope == "pin":
+        inferred_type = "dashboard"
+    elif not inferred_type:
+        inferred_type = "general"
+
     session = ChatSession(
         id=session_id,
         user_id=current_user.id,
         title=payload.title or "New Exploration",
+        session_type=inferred_type,
+        repo_id=payload.repo_id,
+        worktree_path=payload.worktree_path,
+        worktree_branch=payload.worktree_branch,
         agent_id=payload.agent_id or "general",
         parent_session_id=payload.parent_session_id,
         fork_message_id=payload.fork_message_id,
         dashboard_id=payload.dashboard_id,
-        scope=payload.scope or "dashboard",
+        scope=payload.scope or ("worktree" if payload.repo_id else "dashboard"),
         pin_id=payload.pin_id,
-        widget_id=payload.widget_id
+        widget_id=payload.widget_id,
+        is_archived=False
     )
     db.add(session)
     db.commit()
@@ -220,9 +298,15 @@ def create_session(payload: ChatSessionCreate, current_user: User = Depends(get_
         dash = db.query(Dashboard).filter(Dashboard.id == payload.dashboard_id).first()
         if dash:
             dash_title = dash.title
+    repo_name = session.repository.name if session.repository else None
     return {
         "id": session.id,
         "title": session.title,
+        "session_type": session.session_type,
+        "repo_id": session.repo_id,
+        "repo_name": repo_name,
+        "worktree_path": session.worktree_path,
+        "worktree_branch": session.worktree_branch,
         "agent_id": session.agent_id or "general",
         "parent_session_id": session.parent_session_id,
         "fork_message_id": session.fork_message_id,
@@ -233,8 +317,9 @@ def create_session(payload: ChatSessionCreate, current_user: User = Depends(get_
         "scope": session.scope,
         "pin_id": session.pin_id,
         "widget_id": session.widget_id,
-        "created_at": session.created_at.isoformat() if session.created_at else None,
-        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+        "is_archived": False,
+        "created_at": to_iso_utc(session.created_at),
+        "updated_at": to_iso_utc(session.updated_at),
         "message_count": 0
     }
 
@@ -248,7 +333,8 @@ def fork_session(
     """
     Agor-style Session Forking:
     Creates an independent child exploration linked to parent_session_id,
-    cloning dialogue history up to the selected fork point.
+    cloning dialogue history up to the selected fork point while preserving
+    worktree, repository, dashboard, and agent execution context.
     """
     parent = db.query(ChatSession).filter(
         ChatSession.id == session_id,
@@ -272,19 +358,25 @@ def fork_session(
         fork_title = fork_title[:57] + "…"
 
     fork_point_id = payload.message_id or (messages_to_clone[-1].id if messages_to_clone else None)
+    inherited_type = parent.session_type or ("code" if parent.repo_id else ("dashboard" if parent.dashboard_id else "general"))
 
     child_session = ChatSession(
         id=fork_sid,
         user_id=current_user.id,
         title=fork_title,
+        session_type=inherited_type,
+        repo_id=parent.repo_id,
+        worktree_path=parent.worktree_path,
+        worktree_branch=parent.worktree_branch,
         agent_id=parent.agent_id or "general",
         parent_session_id=parent.id,
         fork_message_id=fork_point_id,
         dashboard_id=parent.dashboard_id,
-        scope=parent.scope or "dashboard",
+        scope=parent.scope or ("worktree" if parent.repo_id else "dashboard"),
         pin_id=parent.pin_id,
         widget_id=parent.widget_id,
         status="idle",
+        is_archived=False,
     )
     db.add(child_session)
     db.flush()
@@ -305,15 +397,48 @@ def fork_session(
 
     db.commit()
 
+    # Native AGY Trajectory Cloning:
+    # If the parent session has an existing Antigravity SDK binary trajectory (.db),
+    # clone it to the child's conversation_id so the Antigravity Agent can resume natively
+    # from the exact binary trajectory steps and internal agent state.
+    try:
+        parent_conv_id = session_store.get_antigravity_conversation_id(session_id)
+        child_conv_id = session_store.get_antigravity_conversation_id(fork_sid)
+        session_store.set_sdk_session_id(fork_sid, "antigravity", child_conv_id)
+
+        save_dir = Path(session_store.antigravity_save_dir)
+        parent_db = save_dir / f"{parent_conv_id}.db"
+        child_db = save_dir / f"{child_conv_id}.db"
+
+        if parent_db.exists() and not child_db.exists():
+            shutil.copyfile(parent_db, child_db)
+            with sqlite3.connect(child_db) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE trajectory_meta SET trajectory_id = ?, cascade_id = ?;",
+                    (child_conv_id, child_conv_id)
+                )
+                conn.commit()
+            logger.info(f"Cloned native AGY trajectory DB: {parent_conv_id}.db -> {child_conv_id}.db")
+    except Exception as e:
+        logger.warning(f"Could not clone native AGY session database: {e}")
+
     dash_title = None
     if child_session.dashboard_id:
         dash = db.query(Dashboard).filter(Dashboard.id == child_session.dashboard_id).first()
         if dash:
             dash_title = dash.title
 
+    repo_name = parent.repository.name if parent.repository else None
+
     return {
         "id": child_session.id,
         "title": child_session.title,
+        "session_type": child_session.session_type,
+        "repo_id": child_session.repo_id,
+        "repo_name": repo_name,
+        "worktree_path": child_session.worktree_path,
+        "worktree_branch": child_session.worktree_branch,
         "agent_id": child_session.agent_id,
         "status": child_session.status or "idle",
         "parent_session_id": parent.id,
@@ -324,11 +449,48 @@ def fork_session(
         "scope": child_session.scope,
         "pin_id": child_session.pin_id,
         "widget_id": child_session.widget_id,
+        "is_archived": False,
         "cloned_message_count": cloned_count,
-        "created_at": child_session.created_at.isoformat(),
-        "updated_at": child_session.updated_at.isoformat() if child_session.updated_at else None,
+        "created_at": to_iso_utc(child_session.created_at),
+        "updated_at": to_iso_utc(child_session.updated_at),
         "message_count": cloned_count
     }
+
+@router.post("/sessions/{session_id}/archive")
+def archive_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Archives a chat session, preserving dialogue history while moving out of active lists."""
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.is_archived = True
+    session.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    return {"id": session.id, "is_archived": True, "message": "Session archived"}
+
+@router.post("/sessions/{session_id}/unarchive")
+def unarchive_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Restores an archived chat session back into active view."""
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.is_archived = False
+    session.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    return {"id": session.id, "is_archived": False, "message": "Session restored"}
 
 @router.put("/sessions/{session_id}/dashboard")
 def attach_dashboard(session_id: str, payload: AttachDashboardPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -338,14 +500,87 @@ def attach_dashboard(session_id: str, payload: AttachDashboardPayload, current_u
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Prevent switching scope mid-conversation to avoid LLM context corruption
+    message_count = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).count()
+    if message_count > 0 and session.dashboard_id != payload.dashboard_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot switch dashboard scope on an active conversation with messages. Please create a new chat to analyze another dashboard."
+        )
+
     session.dashboard_id = payload.dashboard_id
+    if payload.session_type:
+        session.session_type = payload.session_type
+    if payload.session_type == "dashboard":
+        session.repo_id = None
+        session.worktree_path = None
+        session.worktree_branch = None
+    elif payload.session_type == "general":
+        session.dashboard_id = None
+        session.repo_id = None
+        session.worktree_path = None
+        session.worktree_branch = None
     db.commit()
     dash_title = None
     if payload.dashboard_id:
         dash = db.query(Dashboard).filter(Dashboard.id == payload.dashboard_id).first()
         if dash:
             dash_title = dash.title
-    return {"id": session.id, "dashboard_id": session.dashboard_id, "dashboard_title": dash_title}
+    return {
+        "id": session.id,
+        "session_type": session.session_type,
+        "dashboard_id": session.dashboard_id,
+        "dashboard_title": dash_title
+    }
+
+@router.put("/sessions/{session_id}/worktree")
+def attach_worktree(
+    session_id: str,
+    payload: AttachWorktreePayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id,
+        ChatSession.user_id == current_user.id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Prevent switching repository or worktree mid-conversation to avoid LLM context corruption
+    message_count = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).count()
+    if message_count > 0 and (session.repo_id != payload.repo_id or session.worktree_path != payload.worktree_path):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot switch repository or worktree on an active conversation with messages. Please create a new chat."
+        )
+
+    session.repo_id = payload.repo_id
+    session.worktree_path = payload.worktree_path
+    session.worktree_branch = payload.worktree_branch
+    if payload.session_type:
+        session.session_type = payload.session_type
+    elif payload.repo_id:
+        session.session_type = "code"
+    if payload.session_type == "general":
+        session.dashboard_id = None
+        session.repo_id = None
+        session.worktree_path = None
+        session.worktree_branch = None
+    elif payload.session_type == "code":
+        session.dashboard_id = None
+    session.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    repo_name = session.repository.name if session.repository else None
+    return {
+        "id": session.id,
+        "session_type": session.session_type,
+        "repo_id": session.repo_id,
+        "repo_name": repo_name,
+        "worktree_path": session.worktree_path,
+        "worktree_branch": session.worktree_branch,
+    }
 
 @router.get("/sessions/{session_id}/messages")
 def get_messages(session_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -359,7 +594,7 @@ def get_messages(session_id: str, current_user: User = Depends(get_current_user)
     messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc()).all()
     results = []
     for m in messages:
-        props, inqs = _parse_proposals_json(m.proposals_json)
+        props, inqs, usage, atts = _parse_proposals_json(m.proposals_json)
         results.append({
             "id": m.id,
             "role": m.role,
@@ -368,7 +603,9 @@ def get_messages(session_id: str, current_user: User = Depends(get_current_user)
             "tool_calls": json.loads(m.tool_calls_json) if m.tool_calls_json else None,
             "proposals": props,
             "inquiries": inqs,
-            "created_at": m.created_at.isoformat() if m.created_at else None
+            "usage": usage,
+            "attachments": atts,
+            "created_at": to_iso_utc(m.created_at)
         })
     return results
 
@@ -443,6 +680,10 @@ async def stream_chat(
             id=session_id,
             user_id=current_user.id,
             title=f"Pin #{pin_id_val} Chat" if pin_id_val else derive_title_from_prompt(payload.message),
+            session_type=payload.session_type or ("code" if payload.repo_id else ("dashboard" if dash_id_to_attach else "general")),
+            repo_id=payload.repo_id,
+            worktree_path=payload.worktree_path,
+            worktree_branch=payload.worktree_branch,
             agent_id=payload.agent_id or "general",
             dashboard_id=dash_id_to_attach,
             scope=scope_val,
@@ -454,10 +695,18 @@ async def stream_chat(
         db.add(session)
         db.commit()
     else:
-        if session.title in ("New Chat", "New Exploration", "Untitled Chat"):
+        if not session.title or session.title in ("New Chat", "New Exploration", "Untitled Chat", "Code Exploration", "Dashboard BI", "Fix Issue in Feature Worktree") or session.title.startswith("New "):
             session.title = derive_title_from_prompt(payload.message)
         if payload.agent_id and payload.agent_id != "general":
             session.agent_id = payload.agent_id
+        if payload.session_type:
+            session.session_type = payload.session_type
+        if payload.repo_id is not None:
+            session.repo_id = payload.repo_id
+        if payload.worktree_path is not None:
+            session.worktree_path = payload.worktree_path
+        if payload.worktree_branch is not None:
+            session.worktree_branch = payload.worktree_branch
         if payload.scope and not session.scope:
             session.scope = payload.scope
         if payload.pin_id and not session.pin_id:
@@ -470,10 +719,14 @@ async def stream_chat(
         db.commit()
 
     # Save User message
+    user_meta: dict[str, Any] = {}
+    if payload.attachments:
+        user_meta["attachments"] = payload.attachments
     user_msg = ChatMessage(
         session_id=session_id,
         role="user",
-        content=payload.message
+        content=payload.message,
+        proposals_json=json.dumps(user_meta) if user_meta else None,
     )
     db.add(user_msg)
     db.commit()
@@ -541,6 +794,7 @@ async def stream_chat(
         collected_tokens = []
         collected_proposals = []
         collected_inquiries = []
+        collected_usage = None
         final_status = "completed"
         final_error = None
 
@@ -579,6 +833,12 @@ async def stream_chat(
                 model=payload.model,
                 parent_context=parent_context,
                 parent_session_id=parent_sid,
+                repo_id=session.repo_id or payload.repo_id,
+                worktree_path=session.worktree_path or payload.worktree_path,
+                worktree_branch=session.worktree_branch or payload.worktree_branch,
+                session_type=session.session_type or payload.session_type,
+                thinking_level=payload.thinking_level,
+                attachments=payload.attachments,
             ):
                 if await request.is_disconnected():
                     await exec_ctx.trigger_cancel(reason="client_disconnected")
@@ -604,6 +864,8 @@ async def stream_chat(
                     collected_tool_calls.append(event)
                 elif event_type == "token":
                     collected_tokens.append(event["content"])
+                elif event_type == "usage":
+                    collected_usage = event.get("usage")
                 elif event_type == "dataset_proposal":
                     prop = event.get("proposal") or event
                     collected_proposals.append(prop)
@@ -651,6 +913,8 @@ async def stream_chat(
             proposals_dict["proposals"] = collected_proposals
         if collected_inquiries:
             proposals_dict["inquiries"] = collected_inquiries
+        if collected_usage:
+            proposals_dict["usage"] = collected_usage
         proposals_json_str = json.dumps(proposals_dict, default=str) if proposals_dict else None
 
         # Determine terminal state: if any proposal is pending, status remains awaiting_permission

@@ -3,8 +3,8 @@ import os
 import logging
 import threading
 from typing import Any
+from pathlib import Path
 from backend.app.services.file_storage import get_user_storage_dir
-from backend.app.config import SEED_MOCK_DATA
 
 logger = logging.getLogger("duckdb_service")
 
@@ -96,6 +96,19 @@ class DuckDBService:
 
         # Disallowed keywords anywhere in the non-literal query structure
         upper_masked = statements[0].upper()
+
+        # Validate any filesystem table functions (read_parquet, read_csv, read_json, etc.)
+        if re.search(r"\b(READ_CSV|READ_PARQUET|READ_JSON|READ_TEXT|READ_BLOB|SCAN_PARQUET|SCAN_CSV|GLOB)\b|\bREAD_[A-Z0-9_]+", upper_masked):
+            from backend.app.config import DERIVED_DATASETS_DIR
+            safe_lake_dir = DERIVED_DATASETS_DIR.resolve()
+            file_args = re.findall(r"(?:read_[a-zA-Z0-9_]+|scan_[a-zA-Z0-9_]+|glob)\s*\(\s*['\"]([^'\"]+)['\"]", stripped_sql, re.IGNORECASE)
+            if not file_args:
+                raise ValueError("Prohibited filesystem table function detected without valid dataset parameter.")
+            for f_arg in file_args:
+                resolved_f = Path(f_arg).resolve()
+                if not (resolved_f == safe_lake_dir or safe_lake_dir in resolved_f.parents):
+                    raise ValueError(f"Access denied: file '{f_arg}' is outside the authorized datasets directory.")
+
         disallowed_keywords = [
             "ATTACH", "COPY", "INSTALL", "LOAD", "PRAGMA", "EXPORT", "IMPORT",
             "DROP", "ALTER", "DELETE", "INSERT", "UPDATE", "CREATE", "CALL",

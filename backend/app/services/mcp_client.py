@@ -27,6 +27,10 @@ def is_safe_mcp_url(url: str) -> tuple[bool, str]:
         if hostname.lower() in blocked_hosts:
             return False, "Access to cloud metadata endpoints is strictly blocked."
 
+        # Check loopback domain aliases
+        if ENVIRONMENT == "production" and hostname.lower() in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False, "Private or loopback network addresses are prohibited in production mode."
+
         # In production mode, block private / link-local addresses
         try:
             ip = ipaddress.ip_address(hostname)
@@ -35,7 +39,17 @@ def is_safe_mcp_url(url: str) -> tuple[bool, str]:
             if ENVIRONMENT == "production" and (ip.is_private or ip.is_loopback):
                 return False, "Private or loopback network addresses are prohibited in production mode."
         except ValueError:
-            pass
+            # If hostname is a domain name, verify resolved addresses in production
+            if ENVIRONMENT == "production":
+                try:
+                    import socket
+                    addrs = socket.getaddrinfo(hostname, None)
+                    for family, _, _, _, sockaddr in addrs:
+                        resolved_ip = ipaddress.ip_address(sockaddr[0])
+                        if resolved_ip.is_link_local or resolved_ip.is_private or resolved_ip.is_loopback:
+                            return False, "Domain resolves to private or loopback network addresses in production mode."
+                except Exception:
+                    pass
 
         return True, ""
     except Exception as e:

@@ -9,10 +9,15 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+      # Sandbox preview port range forwarded for external testing across repos/worktrees:
+      - "${SANDBOX_PORT_RANGE:-10000-10100}:${SANDBOX_PORT_RANGE:-10000-10100}"
     environment:
       - ENVIRONMENT=production
       - HOST=0.0.0.0
       - PORT=8000
+      - SANDBOX_PORT_START=${SANDBOX_PORT_START:-10000}
+      - SANDBOX_PORT_END=${SANDBOX_PORT_END:-10100}
+      - SANDBOX_PUBLIC_HOST=${SANDBOX_PUBLIC_HOST:-localhost}
       # By default, uses local SQLite database mounted in ./local_data
       # Note: Absolute paths in SQLite connection strings require 4 slashes: sqlite:////app/...
       # To switch to Postgres, uncomment the line below and the postgres service below:

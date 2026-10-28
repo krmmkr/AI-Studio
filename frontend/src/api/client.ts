@@ -1,4 +1,4 @@
-import { User, MCPConfig, Dashboard, DashboardWidget, DashboardComment, ChatSession, ChatMessage, AgentPersona, LocalRepository, DatasetProposal, UserInquiry } from '../types';
+import { User, MCPConfig, Dashboard, DashboardWidget, DashboardComment, ChatSession, ChatMessage, AgentPersona, LocalRepository, DatasetProposal, UserInquiry, ChatUsageMetadata, ChatAttachment } from '../types';
 
 const TOKEN_KEY = 'antigravity_token';
 
@@ -179,6 +179,122 @@ export const agentApi = {
       }
     }
   },
+  listWorktrees: (repoId: number) =>
+    request<any[]>(`/api/agents/repositories/${repoId}/worktrees`),
+  createWorktree: (repoId: number, branch: string, baseBranch?: string) =>
+    request<{ message: string; worktree: any }>(`/api/agents/repositories/${repoId}/worktrees`, {
+      method: 'POST',
+      body: JSON.stringify({ branch, base_branch: baseBranch || 'main' }),
+    }),
+  removeWorktree: (repoId: number, worktreePath: string, archiveSessions: boolean = true) =>
+    request<{ success: boolean; message: string; archived_sessions_count?: number; deleted_sessions_count?: number }>(
+      `/api/agents/repositories/${repoId}/worktrees`,
+      {
+        method: 'DELETE',
+        body: JSON.stringify({ worktree_path: worktreePath, archive_sessions: archiveSessions }),
+      }
+    ),
+  getRepositoryTree: (repoId: number, worktreePath?: string) =>
+    request<{ root_path: string; total_items: number; nodes: any[] }>(
+      `/api/agents/repositories/${repoId}/tree${worktreePath ? `?worktree_path=${encodeURIComponent(worktreePath)}` : ''}`
+    ),
+  getFileContent: (repoId: number, path: string, worktreePath?: string) =>
+    request<{ path: string; content: string; language: string; size: number; read_only: boolean }>(
+      `/api/agents/repositories/${repoId}/content?path=${encodeURIComponent(path)}${worktreePath ? `&worktree_path=${encodeURIComponent(worktreePath)}` : ''}`
+    ),
+  saveFileContent: (repoId: number, path: string, content: string, worktreePath?: string) =>
+    request<{ path: string; bytes_written: number; success: boolean }>(
+      `/api/agents/repositories/${repoId}/content`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ path, content, worktree_path: worktreePath }),
+      }
+    ),
+  getRepositoryDiff: (repoId: number, worktreePath?: string, baseBranch: string = 'main') =>
+    request<{ base_branch: string; total_changed: number; files: any[]; file_diffs: any[]; raw_diff: string }>(
+      `/api/agents/repositories/${repoId}/diff?base_branch=${encodeURIComponent(baseBranch)}${worktreePath ? `&worktree_path=${encodeURIComponent(worktreePath)}` : ''}`
+    ),
+  runTerminalCommand: (repoId: number, command: string, worktreePath?: string, timeout: number = 60) =>
+    request<{ command: string; cwd?: string; stdout: string; stderr: string; exit_code: number; duration_ms: number; status: string }>(
+      `/api/agents/repositories/${repoId}/terminal`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ command, worktree_path: worktreePath, timeout }),
+      }
+    ),
+  streamTerminalCommand: async (
+    repoId: number,
+    command: string,
+    worktreePath: string | undefined,
+    sessionId: string,
+    onEvent: (event: any) => void,
+    signal?: AbortSignal
+  ) => {
+    const token = localStorage.getItem('token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`/api/agents/repositories/${repoId}/terminal/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        command,
+        worktree_path: worktreePath,
+        session_id: sessionId,
+        timeout: 600,
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({ detail: 'Failed to initiate terminal stream' }));
+      throw new Error(errJson.detail || 'Terminal stream failed');
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('ReadableStream not supported');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            onEvent(parsed);
+          } catch {
+            // ignore non-json
+          }
+        }
+      }
+    }
+  },
+  cancelTerminalCommand: (sessionId: string) =>
+    request<{ success: boolean; killed: boolean; session_id: string }>(
+      `/api/agents/terminal/${sessionId}/cancel`,
+      { method: 'POST' }
+    ),
+  commitWorktree: (repoId: number, message: string, worktreePath?: string) =>
+    request<{ success: boolean; commit_sha: string; message: string }>(
+      `/api/agents/repositories/${repoId}/commit`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ message, worktree_path: worktreePath }),
+      }
+    ),
 };
 
 // Dashboard Management
@@ -333,8 +449,50 @@ export const duckdbApi = {
 export const chatApi = {
   listSessions: (dashboardId?: string): Promise<ChatSession[]> =>
     request<ChatSession[]>(`/api/chat/sessions${dashboardId ? `?dashboard_id=${encodeURIComponent(dashboardId)}` : ''}`),
-  createSession: (title?: string, dashboardId?: string | null): Promise<ChatSession> =>
-    request<ChatSession>('/api/chat/sessions', { method: 'POST', body: JSON.stringify({ title, dashboard_id: dashboardId }) }),
+  createSession: (
+    title?: string,
+    dashboardId?: string | null,
+    extra?: {
+      sessionType?: 'general' | 'dashboard' | 'code';
+      repoId?: number | null;
+      worktreePath?: string | null;
+      worktreeBranch?: string | null;
+    }
+  ): Promise<ChatSession> =>
+    request<ChatSession>('/api/chat/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title,
+        dashboard_id: dashboardId,
+        session_type: extra?.sessionType,
+        repo_id: extra?.repoId,
+        worktree_path: extra?.worktreePath,
+        worktree_branch: extra?.worktreeBranch,
+      }),
+    }),
+  attachWorktree: (
+    sessionId: string,
+    repoId: number | null,
+    worktreePath?: string | null,
+    worktreeBranch?: string | null,
+    sessionType: 'general' | 'dashboard' | 'code' = 'code'
+  ): Promise<{
+    id: string;
+    session_type: string;
+    repo_id: number | null;
+    repo_name?: string | null;
+    worktree_path?: string | null;
+    worktree_branch?: string | null;
+  }> =>
+    request(`/api/chat/sessions/${sessionId}/worktree`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        repo_id: repoId,
+        worktree_path: worktreePath,
+        worktree_branch: worktreeBranch,
+        session_type: sessionType,
+      }),
+    }),
   forkSession: (
     sessionId: string,
     payload?: { message_id?: number; title?: string }
@@ -343,12 +501,16 @@ export const chatApi = {
       method: 'POST',
       body: JSON.stringify(payload || {}),
     }),
-  attachDashboard: (sessionId: string, dashboardId: string | null): Promise<{ id: string; dashboard_id: string | null; dashboard_title: string | null }> =>
-    request(`/api/chat/sessions/${sessionId}/dashboard`, { method: 'PUT', body: JSON.stringify({ dashboard_id: dashboardId }) }),
+  attachDashboard: (sessionId: string, dashboardId: string | null, sessionType = 'dashboard'): Promise<{ id: string; session_type: string; dashboard_id: string | null; dashboard_title: string | null }> =>
+    request(`/api/chat/sessions/${sessionId}/dashboard`, { method: 'PUT', body: JSON.stringify({ dashboard_id: dashboardId, session_type: sessionType }) }),
   getMessages: (sessionId: string): Promise<ChatMessage[]> =>
     request<ChatMessage[]>(`/api/chat/sessions/${sessionId}/messages`),
   deleteSession: (sessionId: string): Promise<{ message: string }> =>
     request<{ message: string }>(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' }),
+  archiveSession: (sessionId: string): Promise<{ id: string; is_archived: boolean; message: string }> =>
+    request<{ id: string; is_archived: boolean; message: string }>(`/api/chat/sessions/${sessionId}/archive`, { method: 'POST' }),
+  unarchiveSession: (sessionId: string): Promise<{ id: string; is_archived: boolean; message: string }> =>
+    request<{ id: string; is_archived: boolean; message: string }>(`/api/chat/sessions/${sessionId}/unarchive`, { method: 'POST' }),
   stopSession: (sessionId: string): Promise<{ session_id: string; stopped: boolean }> =>
     request<{ session_id: string; stopped: boolean }>(`/api/chat/sessions/${sessionId}/stop`, { method: 'POST' }),
   getRuntimeInfo: (): Promise<{
@@ -383,6 +545,7 @@ export const chatApi = {
       onCanvasAction: (action: { action: string; widget: DashboardWidget }) => void;
       onProposal?: (proposal: DatasetProposal) => void;
       onInquiry?: (inquiry: UserInquiry) => void;
+      onUsage?: (usage: ChatUsageMetadata) => void;
       onDone: () => void;
       onError: (err: any) => void;
     },
@@ -397,6 +560,12 @@ export const chatApi = {
       model?: string;
       parentSessionId?: string;
       signal?: AbortSignal;
+      sessionType?: 'general' | 'dashboard' | 'code';
+      repoId?: number | null;
+      worktreePath?: string | null;
+      worktreeBranch?: string | null;
+      thinkingLevel?: string;
+      attachments?: ChatAttachment[] | Array<{ name: string; mime_type?: string; data?: string; size?: number }>;
     } | string
   ) => {
     const token = getAuthToken();
@@ -409,6 +578,12 @@ export const chatApi = {
     const model = typeof options === 'object' ? options?.model : undefined;
     const parentSessionId = typeof options === 'object' ? options?.parentSessionId : undefined;
     const signal = typeof options === 'object' ? options?.signal : undefined;
+    const sessionType = typeof options === 'object' ? options?.sessionType : undefined;
+    const repoId = typeof options === 'object' ? options?.repoId : undefined;
+    const worktreePath = typeof options === 'object' ? options?.worktreePath : undefined;
+    const worktreeBranch = typeof options === 'object' ? options?.worktreeBranch : undefined;
+    const thinkingLevel = typeof options === 'object' ? options?.thinkingLevel : undefined;
+    const attachments = typeof options === 'object' ? options?.attachments : undefined;
 
     try {
       const response = await fetch(`/api/chat/sessions/${sessionId}/stream`, {
@@ -430,6 +605,12 @@ export const chatApi = {
           base_url: endpoint,
           model,
           parent_session_id: parentSessionId,
+          session_type: sessionType,
+          repo_id: repoId,
+          worktree_path: worktreePath,
+          worktree_branch: worktreeBranch,
+          thinking_level: thinkingLevel,
+          attachments,
         }),
       });
 
@@ -466,6 +647,8 @@ export const chatApi = {
                 callbacks.onToolCall(event);
               } else if (event.type === 'tool_result') {
                 callbacks.onToolResult(event);
+              } else if (event.type === 'usage') {
+                callbacks.onUsage?.(event.usage);
               } else if (event.type === 'canvas_action') {
                 callbacks.onCanvasAction(event);
               } else if (event.type === 'dataset_proposal') {
@@ -496,4 +679,90 @@ export const chatApi = {
       callbacks.onError(err);
     }
   },
+};
+
+export interface UserSettings {
+  user: {
+    id: number;
+    email: string;
+    role: string;
+    created_at?: string;
+  };
+  git: {
+    name: string;
+    email: string;
+  };
+  integrations: {
+    github: {
+      has_token: boolean;
+      masked_token?: string | null;
+      username: string;
+      auth_type: string;
+      oauth_configured: boolean;
+    };
+    jira: {
+      has_token: boolean;
+      masked_token?: string | null;
+      url: string;
+      email: string;
+      cloud_id: string;
+      auth_type: string;
+      oauth_configured: boolean;
+      token_expires_at?: string | null;
+    };
+    byok: {
+      anthropic: { has_key: boolean; masked_key?: string | null };
+      openai: { has_key: boolean; masked_key?: string | null };
+      deepseek: { has_key: boolean; masked_key?: string | null };
+      gemini: { has_key: boolean; masked_key?: string | null };
+    };
+    superset: {
+      username: string;
+      has_password: boolean;
+    };
+  };
+  oauth_providers: {
+    atlassian: { configured: boolean; login_url: string };
+    github: { configured: boolean; login_url: string };
+  };
+  updated_at?: string | null;
+}
+
+export const userApi = {
+  getSettings: (): Promise<UserSettings> =>
+    request<UserSettings>('/api/user/settings'),
+
+  updateSettings: (payload: Partial<{
+    git_name: string;
+    git_email: string;
+    github_token: string;
+    github_username: string;
+    github_auth_type: string;
+    jira_url: string;
+    jira_email: string;
+    jira_token: string;
+    jira_cloud_id: string;
+    jira_auth_type: string;
+    anthropic_api_key: string;
+    openai_api_key: string;
+    deepseek_api_key: string;
+    gemini_api_key: string;
+    superset_username: string;
+    superset_password: string;
+  }>): Promise<{ message: string }> =>
+    request<{ message: string }>('/api/user/settings', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  disconnectOAuth: (provider: 'atlassian' | 'github'): Promise<{ message: string }> =>
+    request<{ message: string }>(`/api/user/oauth/${provider}/disconnect`, {
+      method: 'POST',
+    }),
+
+  changePassword: (current_password: string, new_password: string): Promise<{ message: string }> =>
+    request<{ message: string }>('/api/user/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password }),
+    }),
 };

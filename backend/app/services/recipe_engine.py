@@ -122,27 +122,40 @@ class RecipeEngine:
 
     def _execute_git_extractor(self, recipe: dict[str, Any]) -> list[dict[str, Any]]:
         """Extracts records from a git repository and optionally transforms them with SQL."""
-        repo_name = recipe.get("repo") or "agor"
+        repo_name = recipe.get("repo")
         mode = recipe.get("mode") or recipe.get("extraction_mode") or "git_search"
         path_filter = recipe.get("path_filter") or ""
         search_pattern = recipe.get("search_pattern") or ""
         limit = recipe.get("limit") or 500
 
-        # Resolve repo path
+        # Resolve repo path dynamically
         from backend.app.database import SessionLocal
         from backend.app.models import LocalRepository
 
         repo_path = None
         with SessionLocal() as db:
-            r_obj = db.query(LocalRepository).filter(LocalRepository.name == repo_name).first()
+            r_obj = None
+            if repo_name:
+                r_obj = db.query(LocalRepository).filter(LocalRepository.name == repo_name).first()
             if not r_obj:
                 r_obj = db.query(LocalRepository).first()
             if r_obj:
                 repo_path = r_obj.local_path
+                repo_name = r_obj.name
 
         if not repo_path or not Path(repo_path).exists():
-            default_path = Path("local_data/repos") / repo_name
-            if default_path.exists():
+            if repo_name:
+                default_path = Path("local_data/repos") / repo_name
+                if default_path.exists():
+                    repo_path = str(default_path)
+            if not repo_path or not Path(repo_path).exists():
+                repos_dir = Path("local_data/repos")
+                if repos_dir.exists():
+                    for entry in sorted(repos_dir.iterdir()):
+                        if entry.is_dir() and not entry.name.startswith("."):
+                            repo_path = str(entry)
+                            repo_name = entry.name
+                            break
                 repo_path = str(default_path)
 
         if not repo_path:

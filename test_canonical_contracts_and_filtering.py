@@ -1,5 +1,5 @@
 """
-Verification suite for Productionized Antigravity Cockpit:
+Verification suite for AI Studio:
 1. Real Git --numstat Churn Ingestion in DuckDB
 2. Canonical Chart Archetypes Compilation (Bar, Line, Area, Dual Axis, Pie/Donut, Heatmap, KPI, Table)
 3. Parameterized DuckDB Query Filtering (Repo, Time Range, Min Churn)

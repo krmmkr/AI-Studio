@@ -18,6 +18,7 @@ class User(Base):
     chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
     dashboards = relationship("Dashboard", back_populates="user", cascade="all, delete-orphan")
     files = relationship("DatasetFile", back_populates="user", cascade="all, delete-orphan")
+    settings = relationship("UserSetting", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 
 class MCPConfig(Base):
@@ -50,6 +51,11 @@ class ChatSession(Base):
     agent_id = Column(String(50), default="general")  # 'general', 'github-agent', 'superset-agent', 'correlation-agent'
     parent_session_id = Column(String(64), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True)  # Agor genealogy forking
     fork_message_id = Column(Integer, nullable=True)  # Message index / ID where fork branched off
+    session_type = Column(String(20), default="general")  # 'general', 'dashboard', 'code'
+    repo_id = Column(Integer, ForeignKey("local_repositories.id", ondelete="SET NULL"), nullable=True)
+    worktree_path = Column(String(500), nullable=True)
+    worktree_branch = Column(String(100), nullable=True)
+    is_archived = Column(Boolean, default=False, nullable=False)
     status = Column(String(30), default="idle")  # 'idle', 'running', 'stopping', 'awaiting_permission', 'timed_out', 'failed', 'completed'
     last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -58,6 +64,7 @@ class ChatSession(Base):
     user = relationship("User", back_populates="chat_sessions")
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
     dashboard = relationship("Dashboard")
+    repository = relationship("LocalRepository")
     parent = relationship("ChatSession", remote_side=[id], backref="children")
 
 
@@ -179,3 +186,56 @@ class LocalRepository(Base):
     default_branch = Column(String(100), default="main")
     last_synced_at = Column(DateTime, default=datetime.datetime.utcnow)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class SandboxPortAllocation(Base):
+    __tablename__ = "sandbox_port_allocations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    allocation_key = Column(String(500), unique=True, index=True, nullable=False)
+    port = Column(Integer, unique=True, index=True, nullable=False)
+    repo_id = Column(Integer, nullable=True)
+    repo_name = Column(String(100), nullable=True)
+    worktree_path = Column(String(500), nullable=True)
+    branch = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    last_accessed_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class UserSetting(Base):
+    __tablename__ = "user_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, index=True, nullable=False)
+
+    # Git Identity for Code Studio & Commit attribution
+    git_name = Column(String(100), nullable=True)
+    git_email = Column(String(255), nullable=True)
+
+    # GitHub Service Integration
+    github_token = Column(Text, nullable=True)  # Fernet encrypted PAT or OAuth token
+    github_username = Column(String(100), nullable=True)
+    github_auth_type = Column(String(20), default="pat")  # 'pat' or 'oauth'
+
+    # Atlassian Jira / Confluence MCP Integration (Browser OAuth / Token)
+    jira_url = Column(String(255), nullable=True)
+    jira_email = Column(String(255), nullable=True)
+    jira_token = Column(Text, nullable=True)  # Fernet encrypted API token or OAuth access_token
+    jira_refresh_token = Column(Text, nullable=True)  # Fernet encrypted OAuth refresh_token
+    jira_cloud_id = Column(String(100), nullable=True)
+    jira_auth_type = Column(String(20), default="token")  # 'token' or 'oauth'
+    jira_token_expires_at = Column(DateTime, nullable=True)
+
+    # AI Provider BYOK (Bring Your Own Key) - Fernet encrypted
+    anthropic_api_key = Column(Text, nullable=True)
+    openai_api_key = Column(Text, nullable=True)
+    deepseek_api_key = Column(Text, nullable=True)
+    gemini_api_key = Column(Text, nullable=True)
+
+    # Superset Credentials
+    superset_username = Column(String(100), nullable=True)
+    superset_password = Column(Text, nullable=True)  # Fernet encrypted
+
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="settings")

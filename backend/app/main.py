@@ -19,6 +19,7 @@ from backend.app.database import engine, Base, SessionLocal, check_db_connection
 from backend.app.services.seed_data import seed_database
 from backend.app.routers import (
     auth_routes,
+    user_routes,
     mcp_routes,
     chat_routes,
     dashboard_routes,
@@ -29,24 +30,9 @@ from backend.app.routers import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure local directory structure exists and has open write permissions
-    import os
+    # Ensure local directory structure exists
     for _d in (LOCAL_DATA_DIR, STORAGE_DIR, REPOS_DIR, DERIVED_DATASETS_DIR, SESSIONS_ROOT_DIR, ANTIGRAVITY_APP_DATA, STATIC_DIR):
         _d.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(_d, 0o777)
-        except Exception:
-            pass
-
-    # Ensure DB file and WAL journal files are writable if they already exist
-    db_file = LOCAL_DATA_DIR / "cockpit.db"
-    if db_file.exists():
-        for _f in (db_file, LOCAL_DATA_DIR / "cockpit.db-wal", LOCAL_DATA_DIR / "cockpit.db-shm"):
-            if _f.exists():
-                try:
-                    os.chmod(_f, 0o666)
-                except Exception:
-                    pass
 
     # Startup: ensure tables and seed database
     Base.metadata.create_all(bind=engine)
@@ -82,6 +68,7 @@ app.add_middleware(
 
 # Include Routers
 app.include_router(auth_routes.router)
+app.include_router(user_routes.router, prefix="/api/user", tags=["user"])
 app.include_router(mcp_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(dashboard_routes.router)

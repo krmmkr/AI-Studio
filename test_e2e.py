@@ -164,16 +164,41 @@ async def test_all():
         
         r_dash = await client.get(f"/api/dashboards/{my_dash_id}", headers=headers)
         dash_detail = r_dash.json()
-        assert len(dash_detail["widgets"]) >= 4, f"Expected 4 widgets, got {len(dash_detail['widgets'])}"
-        print(f"✓ Dashboard loaded with {len(dash_detail['widgets'])} interactive widgets")
+        assert "widgets" in dash_detail
+        print(f"✓ Dashboard loaded cleanly without ghost tables (ID: {my_dash_id})")
 
-        # 8. Test Widget Refresh
-        w_id = dash_detail["widgets"][0]["id"]
-        r_ref = await client.post(f"/api/dashboards/{my_dash_id}/widgets/{w_id}/refresh", headers=headers)
+        # 8. Test Dynamic Widget Creation & Universal Refresh with live DuckDB dataset
+        duckdb_service.materialize_dataset("e2e_velocity", [
+            {"weekday": "Mon", "turnaround_hours": 14.2},
+            {"weekday": "Tue", "turnaround_hours": 8.5},
+            {"weekday": "Wed", "turnaround_hours": 22.1},
+        ])
+        sample_widget = {
+            "widget_id": "test-velocity-chart",
+            "title": "PR Velocity Live Refresh",
+            "widget_type": "echarts",
+            "grid": {"x": 0, "y": 0, "w": 6, "h": 4},
+            "datasource": {
+                "type": "duckdb",
+                "label": "DuckDB: e2e_velocity",
+                "query": "SELECT weekday, turnaround_hours FROM e2e_velocity ORDER BY turnaround_hours DESC",
+            },
+            "spec": {
+                "archetype": "bar",
+                "sql": "SELECT weekday, turnaround_hours FROM e2e_velocity ORDER BY turnaround_hours DESC",
+                "xAxis": {"type": "category", "data": ["Wed", "Mon", "Tue"]},
+                "yAxis": {"type": "value"},
+                "series": [{"name": "Hours", "type": "bar", "data": [22.1, 14.2, 8.5]}],
+            },
+        }
+        r_add = await client.post(f"/api/dashboards/{my_dash_id}/widgets", json=sample_widget, headers=headers)
+        assert r_add.status_code == 200, f"Add widget failed: {r_add.text}"
+
+        r_ref = await client.post(f"/api/dashboards/{my_dash_id}/widgets/test-velocity-chart/refresh", headers=headers)
         assert r_ref.status_code == 200, f"Refresh failed: {r_ref.text}"
         refreshed_widget = r_ref.json()
-        assert refreshed_widget["id"] == w_id
-        print(f"✓ Widget telemetry refreshed on demand via backend datasource engine ({w_id})")
+        assert refreshed_widget["id"] == "test-velocity-chart"
+        print(f"✓ Widget telemetry refreshed on demand via backend datasource engine (test-velocity-chart)")
 
         # 9. Test Chat Session & SSE Stream with Jira prompt
         r_sess = await client.post("/api/chat/sessions", json={"title": "Jira Test Chat"}, headers=headers)
@@ -219,6 +244,8 @@ async def test_all():
 
     print("\nALL PERSONA, DARK THEME & REPO TESTS PASSED! 🚀")
     TEST_DB_PATH.unlink(missing_ok=True)
+    Path(f"{TEST_DB_PATH}-wal").unlink(missing_ok=True)
+    Path(f"{TEST_DB_PATH}-shm").unlink(missing_ok=True)
 
 if __name__ == "__main__":
     asyncio.run(test_all())

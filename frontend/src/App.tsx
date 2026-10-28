@@ -8,21 +8,23 @@ import { ChartExpandModal } from './components/Canvas/ChartExpandModal';
 import { CreateDashboardModal } from './components/Canvas/CreateDashboardModal';
 import { DashboardCopilotDrawer } from './components/Canvas/DashboardCopilotDrawer';
 import { MCPSettingsModal } from './components/Settings/MCPSettingsModal';
+import { UserSettingsModal } from './components/Settings/UserSettingsModal';
 import { UserManagementModal } from './components/Settings/UserManagementModal';
 import { DuckDBConsoleModal } from './components/Settings/DuckDBConsoleModal';
 import { AgentInstructionsModal } from './components/Settings/AgentInstructionsModal';
 import { RepositoryManagerModal } from './components/Settings/RepositoryManagerModal';
 import { LoginModal } from './components/Auth/LoginModal';
 import { AgenticChat } from './components/Chat/AgenticChat';
+import { CodeStudio } from './components/Studio/CodeStudio';
 import { Loader2 } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Top Nav Tab: 'chat' (Agentic Chat), 'my' (My Workspace), or 'public' (Public Workspace)
-  const [activeNavTab, setActiveNavTab] = useState<'chat' | 'my' | 'public'>(() => {
-    return (localStorage.getItem('antigravity_nav_tab') as 'chat' | 'my' | 'public') || 'chat';
+  // Top Nav Tab: 'chat' (Agentic Chat), 'my' (My Workspace), 'public' (Public Workspace), or 'studio' (Code Studio)
+  const [activeNavTab, setActiveNavTab] = useState<'chat' | 'my' | 'public' | 'studio'>(() => {
+    return (localStorage.getItem('antigravity_nav_tab') as 'chat' | 'my' | 'public' | 'studio') || 'chat';
   });
 
   // Default View: 'home' displays the visual thumbnail gallery.
@@ -50,6 +52,7 @@ export const App: React.FC = () => {
 
   // Modal & Drawer visibility states
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [userMgmtOpen, setUserMgmtOpen] = useState(false);
   const [duckdbConsoleOpen, setDuckdbConsoleOpen] = useState(false);
   const [agentInstructionsOpen, setAgentInstructionsOpen] = useState(false);
@@ -74,7 +77,7 @@ export const App: React.FC = () => {
 
   // Automatically dismiss canvas assistant drawer when navigating out of the dashboard canvas
   useEffect(() => {
-    if (activeNavTab === 'chat' || currentView !== 'canvas' || !activeDashboard) {
+    if (activeNavTab === 'chat' || activeNavTab === 'studio' || currentView !== 'canvas' || !activeDashboard) {
       setDashboardCopilotOpen(false);
       setCopilotInitialPrompt(undefined);
     }
@@ -150,7 +153,7 @@ export const App: React.FC = () => {
       const fullDash = await dashboardApi.get(id);
       setActiveDashboard(fullDash);
       setCurrentView('canvas');
-      if (activeNavTab === 'chat') {
+      if (activeNavTab === 'chat' || activeNavTab === 'studio') {
         setActiveNavTab('my');
         localStorage.setItem('antigravity_nav_tab', 'my');
       }
@@ -185,7 +188,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSelectTab = (tab: 'chat' | 'my' | 'public') => {
+  const handleSelectTab = (tab: 'chat' | 'my' | 'public' | 'studio') => {
     setActiveNavTab(tab);
     localStorage.setItem('antigravity_nav_tab', tab);
     if (tab === 'my') {
@@ -380,6 +383,7 @@ export const App: React.FC = () => {
         workspaceScope={workspaceScope}
         onSelectWorkspaceScope={(scope) => handleSelectTab(scope)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenUserSettings={() => setUserSettingsOpen(true)}
         onOpenAgentInstructions={() => setAgentInstructionsOpen(true)}
         onOpenRepoManager={() => setRepoManagerOpen(true)}
         onOpenUserManagement={() => setUserMgmtOpen(true)}
@@ -389,16 +393,33 @@ export const App: React.FC = () => {
 
       {/* Main Workspace Body */}
       <div className="flex-1 flex overflow-hidden relative">
-        {activeNavTab === 'chat' ? (
+        {activeNavTab === 'studio' ? (
+          /* Dedicated Monaco Code Studio: File Tree, Worktrees, Diff Editor & Sandbox Terminal */
+          <CodeStudio darkMode={darkMode} />
+        ) : activeNavTab === 'chat' ? (
           /* Generic Agentic Chat (Gemini Chat Interface with attached MCP tools) */
           <AgenticChat
             user={user}
             personas={personas}
             activeDashboardId={activeDashboard?.id}
             dashboards={dashboardsList}
+            repositories={repositories}
             onSelectDashboard={handleSelectDashboard}
             onCanvasAction={handleCanvasAction}
             onNavigateToCanvas={handleNavigateToCanvas}
+            onNavigateToStudio={(repoId?: number, worktreePath?: string, filePath?: string) => {
+              if (repoId) {
+                localStorage.setItem('studio_active_repo_id', repoId.toString());
+              }
+              if (worktreePath) {
+                localStorage.setItem('studio_active_worktree_path', worktreePath);
+              }
+              if (filePath) {
+                localStorage.setItem('studio_active_file_path', filePath);
+              }
+              setActiveNavTab('studio');
+              localStorage.setItem('antigravity_nav_tab', 'studio');
+            }}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenAgentInstructions={() => setAgentInstructionsOpen(true)}
           />
@@ -457,7 +478,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Dashboard-Level Studio Assistant Drawer (Strictly scoped to active dashboard canvas) */}
-        {activeNavTab !== 'chat' && currentView === 'canvas' && activeDashboard && (
+        {activeNavTab !== 'chat' && activeNavTab !== 'studio' && currentView === 'canvas' && activeDashboard && (
           <DashboardCopilotDrawer
             isOpen={dashboardCopilotOpen}
             onClose={() => {
@@ -474,6 +495,12 @@ export const App: React.FC = () => {
       </div>
 
       {/* Modals */}
+      <UserSettingsModal
+        isOpen={userSettingsOpen}
+        onClose={() => setUserSettingsOpen(false)}
+        currentUser={user}
+      />
+
       <MCPSettingsModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}

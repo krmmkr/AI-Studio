@@ -4,7 +4,7 @@ import hashlib
 import bcrypt
 import jwt
 from cryptography.fernet import Fernet
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from backend.app.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRATION_MINUTES
@@ -65,15 +65,22 @@ def decode_access_token(token: str) -> dict | None:
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    token: str | None = Query(None),
     db: Session = Depends(get_db)
 ) -> User:
-    if not credentials:
+    raw_token = None
+    if credentials:
+        raw_token = credentials.credentials
+    elif token:
+        raw_token = token
+
+    if not raw_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication credentials were not provided",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_access_token(credentials.credentials)
+    payload = decode_access_token(raw_token)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

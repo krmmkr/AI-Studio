@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 from typing import Any
-from backend.app.config import REPOS_DIR
+from backend.app.config import REPOS_DIR, LOCAL_DATA_DIR
 from backend.app.services.duckdb_service import duckdb_service
 
 logger = logging.getLogger("git_service")
@@ -153,6 +153,22 @@ class GitService:
         """
         token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT") or "").strip()
         if not token:
+            try:
+                from backend.app.database import SessionLocal
+                from backend.app.models import MCPConfig
+                from backend.app.auth import decrypt_secret
+                with SessionLocal() as db:
+                    cfg = db.query(MCPConfig).filter(
+                        MCPConfig.is_active == True,
+                        (MCPConfig.name.ilike("%github%")) | (MCPConfig.url.ilike("%github%"))
+                    ).first()
+                    if cfg and cfg.auth_header:
+                        dec = decrypt_secret(cfg.auth_header)
+                        if dec:
+                            token = dec.replace("Bearer ", "").replace("bearer ", "").replace("token ", "").strip()
+            except Exception:
+                pass
+        if not token:
             return []
 
         import base64
@@ -197,7 +213,7 @@ class GitService:
                 timeout=timeout,
                 env=env,
             )
-            return res.returncode, res.stdout.strip(), res.stderr.strip()
+            return res.returncode, res.stdout.rstrip("\r\n"), res.stderr.rstrip("\r\n")
         except subprocess.TimeoutExpired:
             return 124, "", f"Git command timed out after {timeout} seconds."
         except Exception as e:
@@ -453,10 +469,22 @@ class GitService:
     def remove_worktree(self, local_path_or_repo: str, worktree_path: str) -> bool:
         """Removes an isolated worktree and prunes worktree metadata."""
         target_dir = self.resolve_repo_dir(local_path_or_repo)
-        rc, _, _ = self._run_git(["worktree", "remove", "--force", worktree_path], cwd=target_dir)
+        target_path = Path(worktree_path).resolve()
+        main_dir = target_dir.resolve()
+        if target_path == main_dir or str(target_path) == str(main_dir):
+            logger.warning(f"Prevented attempt to delete main repository root as worktree: {target_path}")
+            return False
+
+        # Security: Enforce that target_path is strictly inside LOCAL_DATA_DIR / "worktrees"
+        worktrees_root = (LOCAL_DATA_DIR / "worktrees").resolve()
+        if not (worktrees_root in target_path.parents and target_path != worktrees_root):
+            logger.warning(f"Prevented attempt to delete directory outside worktrees directory: {target_path}")
+            return False
+
+        rc, _, _ = self._run_git(["worktree", "remove", "--force", str(target_path)], cwd=target_dir)
         self._run_git(["worktree", "prune"], cwd=target_dir)
-        if Path(worktree_path).exists():
-            shutil.rmtree(worktree_path, ignore_errors=True)
+        if target_path.exists() and target_path != main_dir:
+            shutil.rmtree(target_path, ignore_errors=True)
         return rc == 0
 
     def extract_repo_metadata(self, target_dir: Path, safe_name: str, limit: int = 500) -> dict[str, Any]:
@@ -565,7 +593,8 @@ class GitService:
             if not line:
                 continue
             is_current = line.startswith("*")
-            cleaned = line.lstrip("* ").strip()
+            # Strip both '*' (current checkout) and '+' (linked worktree checkout in git 2.5+)
+            cleaned = line.lstrip("*+ ").strip()
             if "->" in cleaned or cleaned.startswith("(HEAD detached"):
                 continue
             if cleaned.startswith("remotes/origin/"):
@@ -606,6 +635,17 @@ class GitService:
             raise ValueError(f"Path '{local_path}' is not a valid git repository.")
 
         safe_branch = branch_name.strip()
+
+        # Check if the branch is currently checked out in an active isolated worktree
+        wts = self.list_worktrees(str(target_dir))
+        for wt in wts:
+            if wt.get("branch") == safe_branch and Path(wt.get("path", "")).resolve() != target_dir.resolve():
+                raise ValueError(
+                    f"Branch '{safe_branch}' is already active in worktree '{wt.get('path')}'. "
+                    "The primary repository clone remains on its default branch for analytics. "
+                    "Switch to this worktree in Code Studio to develop on this branch."
+                )
+
         is_bare = (target_dir / "HEAD").is_file() and not (target_dir / ".git").exists()
         if is_bare:
             rc, stdout, stderr = self._run_git(["symbolic-ref", "HEAD", f"refs/heads/{safe_branch}"], cwd=target_dir)
@@ -1350,6 +1390,404 @@ class GitService:
             logger.info(f"Successfully deleted local repository files at {target}.")
             return True
         return False
+
+    def _resolve_working_dir(self, repo_or_path: str, worktree_path: str | None = None) -> Path:
+        """Resolves target directory, preferring validated worktree_path if valid and within authorized boundaries."""
+        repo_dir = self.resolve_repo_dir(repo_or_path)
+        if worktree_path and worktree_path.strip():
+            p = Path(worktree_path.strip()).resolve()
+            # Enforce strict path confinement to prevent path traversal outside workspace
+            allowed_roots = [
+                (LOCAL_DATA_DIR / "worktrees").resolve(),
+                REPOS_DIR.resolve(),
+                LOCAL_DATA_DIR.resolve(),
+                repo_dir.resolve(),
+            ]
+            is_allowed = any(
+                p == root or root in p.parents
+                for root in allowed_roots
+            )
+            if not is_allowed:
+                raise ValueError(f"Access denied: worktree path '{worktree_path}' traverses outside authorized workspace.")
+            if p.is_dir():
+                return p
+        return repo_dir
+
+    @staticmethod
+    def detect_monaco_language(filename: str) -> str:
+        """Maps file extension to standard Monaco Editor language identifier."""
+        name_lower = Path(filename).name.lower()
+        if name_lower in ("dockerfile", "dockerfile.dev", "dockerfile.prod"):
+            return "dockerfile"
+        ext = Path(filename).suffix.lower()
+        mapping = {
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".py": "python",
+            ".json": "json",
+            ".html": "html",
+            ".css": "css",
+            ".scss": "scss",
+            ".md": "markdown",
+            ".sql": "sql",
+            ".yml": "yaml",
+            ".yaml": "yaml",
+            ".sh": "shell",
+            ".bash": "shell",
+            ".rs": "rust",
+            ".go": "go",
+            ".java": "java",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".h": "cpp",
+            ".xml": "xml",
+            ".ini": "ini",
+            ".toml": "ini",
+        }
+        return mapping.get(ext, "plaintext")
+
+    def get_file_tree(
+        self,
+        repo_or_path: str,
+        worktree_path: str | None = None,
+        max_depth: int = 8,
+        max_items: int = 8000,
+    ) -> dict[str, Any]:
+        """
+        Recursively scans the active worktree or repository directory and returns a clean,
+        hierarchical file tree for Monaco and file explorer navigation.
+        """
+        target_dir = self._resolve_working_dir(repo_or_path, worktree_path)
+        if not target_dir.exists():
+            raise ValueError(f"Target directory '{target_dir}' does not exist.")
+
+        ignored_dirs = {
+            ".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
+            "build", ".pytest_cache", ".coverage", ".tox", ".idea", ".vscode",
+            ".turbo", ".next", ".cache", ".output", "coverage"
+        }
+
+        nodes = []
+        count = 0
+
+        for root, dirs, files in os.walk(target_dir):
+            rel_root = os.path.relpath(root, target_dir)
+            posix_rel_root = Path(rel_root).as_posix() if rel_root != "." else ""
+            parts = Path(rel_root).parts if rel_root != "." else ()
+            if any(p in ignored_dirs for p in parts):
+                dirs.clear()
+                continue
+            if len(parts) >= max_depth:
+                dirs.clear()
+                continue
+
+            # Sort and filter ignored subdirectories in-place so os.walk traverses predictably
+            dirs[:] = sorted([d for d in dirs if d not in ignored_dirs and not d.startswith(".")])
+
+            for d in dirs:
+                rel_d = f"{posix_rel_root}/{d}" if posix_rel_root else d
+                nodes.append({
+                    "path": rel_d,
+                    "name": d,
+                    "type": "directory",
+                    "parent": posix_rel_root,
+                })
+                count += 1
+
+            for f in sorted(files):
+                if f.startswith(".") and f not in (".env.example", ".gitignore", ".dockerignore"):
+                    continue
+                rel_f = f"{posix_rel_root}/{f}" if posix_rel_root else f
+                full_f = Path(root) / f
+                sz = full_f.stat().st_size if full_f.exists() else 0
+                nodes.append({
+                    "path": rel_f,
+                    "name": f,
+                    "type": "file",
+                    "size": sz,
+                    "language": self.detect_monaco_language(f),
+                    "parent": posix_rel_root,
+                })
+                count += 1
+                if count >= max_items:
+                    break
+            if count >= max_items:
+                break
+
+        return {
+            "root_path": str(target_dir),
+            "total_items": len(nodes),
+            "nodes": nodes,
+        }
+
+    def get_file_content(
+        self,
+        repo_or_path: str,
+        file_path: str,
+        worktree_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Safely reads file content for editing or previewing in Monaco."""
+        target_dir = self._resolve_working_dir(repo_or_path, worktree_path)
+        clean_rel = file_path.strip().lstrip("/\\")
+        if ".." in Path(clean_rel).parts:
+            raise ValueError("Path traversal outside repository boundary.")
+
+        full_path = (target_dir / clean_rel).resolve()
+        if not str(full_path).startswith(str(target_dir) + os.sep) and full_path != target_dir:
+            raise ValueError("Path traversal outside repository boundary.")
+
+        if full_path.exists() and full_path.is_file():
+            try:
+                content = full_path.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                raise ValueError(f"Failed to read file: {e}")
+        else:
+            # Fallback to git show HEAD:<file>
+            rc, stdout, stderr = self._run_git(["show", f"HEAD:{clean_rel}"], cwd=target_dir)
+            if rc != 0:
+                raise ValueError(f"File '{file_path}' not found: {stderr or 'does not exist'}")
+            content = stdout
+
+        return {
+            "path": clean_rel,
+            "content": content,
+            "language": self.detect_monaco_language(clean_rel),
+            "size": len(content),
+            "read_only": False,
+        }
+
+    def save_file_content(
+        self,
+        repo_or_path: str,
+        file_path: str,
+        content: str,
+        worktree_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Safely saves code file changes directly in the active worktree."""
+        target_dir = self._resolve_working_dir(repo_or_path, worktree_path)
+        clean_rel = file_path.strip().lstrip("/\\")
+        if ".." in Path(clean_rel).parts:
+            raise ValueError("Path traversal outside repository boundary.")
+
+        full_path = (target_dir / clean_rel).resolve()
+        if not str(full_path).startswith(str(target_dir) + os.sep) and full_path != target_dir:
+            raise ValueError("Path traversal outside repository boundary.")
+
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+
+        return {
+            "path": clean_rel,
+            "bytes_written": len(content.encode("utf-8")),
+            "success": True,
+        }
+
+    def get_diff_summary(
+        self,
+        repo_or_path: str,
+        worktree_path: str | None = None,
+        base_branch: str = "main",
+    ) -> dict[str, Any]:
+        """
+        Computes git status and file-by-file diffs between working tree and base branch
+        for seamless side-by-side comparison in Monaco DiffEditor.
+        """
+        target_dir = self._resolve_working_dir(repo_or_path, worktree_path)
+
+        # 1. Get git status
+        rc_st, st_out, _ = self._run_git(["status", "--porcelain"], cwd=target_dir)
+        changed_files = []
+        if rc_st == 0 and st_out:
+            for line in st_out.splitlines():
+                if len(line) < 3:
+                    continue
+                code = line[:2]
+                fpath = line[3:].strip()
+                # Handle renames: "R  orig -> new"
+                if " -> " in fpath:
+                    fpath = fpath.split(" -> ")[-1].strip()
+                # Strip quotes if git returned quoted paths
+                if fpath.startswith('"') and fpath.endswith('"'):
+                    fpath = fpath[1:-1]
+                
+                clean_code = code.strip()
+                status_label = "modified"
+                if "?" in code or "A" in code:
+                    status_label = "added"
+                    clean_code = "U" if "?" in code else "A"
+                elif "D" in code:
+                    status_label = "deleted"
+                    clean_code = "D"
+                elif "R" in code:
+                    status_label = "renamed"
+                    clean_code = "R"
+                else:
+                    clean_code = "M"
+
+                changed_files.append({"path": fpath, "status": status_label, "code": clean_code})
+
+        # 2. Get full unified diff against base branch or HEAD
+        rc_df, diff_out, _ = self._run_git(["diff", f"origin/{base_branch}...HEAD"], cwd=target_dir)
+        if rc_df != 0:
+            rc_df, diff_out, _ = self._run_git(["diff", "HEAD"], cwd=target_dir)
+            if rc_df != 0:
+                rc_df, diff_out, _ = self._run_git(["diff"], cwd=target_dir)
+
+        # 3. For each changed file, grab original vs modified text for Monaco DiffEditor
+        file_diffs = []
+        for item in changed_files[:50]:
+            fp = item["path"]
+            orig_text = ""
+            mod_text = ""
+
+            # Read original from base branch
+            rc_o, out_o, _ = self._run_git(["show", f"origin/{base_branch}:{fp}"], cwd=target_dir)
+            if rc_o == 0:
+                orig_text = out_o
+            else:
+                rc_o2, out_o2, _ = self._run_git(["show", f"HEAD:{fp}"], cwd=target_dir)
+                if rc_o2 == 0:
+                    orig_text = out_o2
+
+            # Read current file on disk
+            disk_f = target_dir / fp
+            if disk_f.is_file():
+                try:
+                    mod_text = disk_f.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+
+            file_diffs.append({
+                "path": fp,
+                "status": item["status"],
+                "language": self.detect_monaco_language(fp),
+                "original": orig_text,
+                "modified": mod_text,
+            })
+
+        return {
+            "base_branch": base_branch,
+            "total_changed": len(changed_files),
+            "files": changed_files,
+            "file_diffs": file_diffs,
+            "raw_diff": diff_out or "",
+        }
+
+    def execute_terminal_command(
+        self,
+        repo_or_path: str,
+        command: str,
+        worktree_path: str | None = None,
+        timeout: int = 60,
+        assigned_port: int | None = None,
+    ) -> dict[str, Any]:
+        """Executes terminal/test/build command directly in the active worktree directory."""
+        target_dir = self._resolve_working_dir(repo_or_path, worktree_path)
+        import time
+        start_t = time.time()
+
+        forbidden = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:", "> /dev/sda"]
+        for f in forbidden:
+            if f in command:
+                return {
+                    "command": command,
+                    "stdout": "",
+                    "stderr": f"Command blocked: prohibited pattern '{f}'.",
+                    "exit_code": 1,
+                    "duration_ms": 0,
+                    "status": "blocked",
+                }
+
+        env = os.environ.copy()
+        env["TERM"] = "xterm-256color"
+        env["FORCE_COLOR"] = "1"
+        env["HOST"] = "0.0.0.0"
+
+        if assigned_port:
+            env["PORT"] = str(assigned_port)
+            env["APP_PORT"] = str(assigned_port)
+            env["VITE_PORT"] = str(assigned_port)
+            env["UVICORN_PORT"] = str(assigned_port)
+
+        try:
+            res = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(target_dir),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+            duration = int((time.time() - start_t) * 1000)
+
+            stderr_out = res.stderr or ""
+            if "Address already in use" in stderr_out or "EADDRINUSE" in stderr_out:
+                port_hint = f" (Your sandbox assigned port is {assigned_port})" if assigned_port else ""
+                stderr_out += f"\n\n💡 [AI Studio Port Notice] Port collision detected{port_hint}.\nYour worktree has an assigned conflict-free port: {assigned_port or '$PORT'}.\nRun your command using: 'uvicorn main:app --port $PORT' or 'npm run dev -- --port $PORT'."
+
+            return {
+                "command": command,
+                "cwd": str(target_dir),
+                "stdout": res.stdout,
+                "stderr": stderr_out,
+                "exit_code": res.returncode,
+                "duration_ms": duration,
+                "status": "success" if res.returncode == 0 else "failed",
+                "assigned_port": assigned_port,
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "command": command,
+                "stdout": "",
+                "stderr": f"Command timed out after {timeout} seconds.",
+                "exit_code": 124,
+                "duration_ms": timeout * 1000,
+                "status": "timeout",
+            }
+        except Exception as e:
+            return {
+                "command": command,
+                "stdout": "",
+                "stderr": str(e),
+                "exit_code": 1,
+                "duration_ms": 0,
+                "status": "error",
+            }
+
+    def commit_worktree_changes(
+        self,
+        repo_or_path: str,
+        message: str,
+        worktree_path: str | None = None,
+        author_name: str | None = None,
+        author_email: str | None = None,
+    ) -> dict[str, Any]:
+        """Stages all working-tree changes and creates a git commit with optional user-level author attribution."""
+        target_dir = self._resolve_working_dir(repo_or_path, worktree_path)
+        self._run_git(["add", "-A"], cwd=target_dir)
+
+        git_cmd: list[str] = []
+        if author_name:
+            git_cmd.extend(["-c", f"user.name={author_name}"])
+        if author_email:
+            git_cmd.extend(["-c", f"user.email={author_email}"])
+        git_cmd.extend(["commit", "-m", message])
+
+        rc, out, err = self._run_git(git_cmd, cwd=target_dir)
+        if rc != 0:
+            raise ValueError(f"Failed to commit: {err or out or 'No changes to commit'}")
+
+        _, sha, _ = self._run_git(["rev-parse", "HEAD"], cwd=target_dir)
+        return {
+            "success": True,
+            "commit_sha": sha.strip(),
+            "message": message,
+            "author": f"{author_name or 'Default'} <{author_email or 'default'}>" if (author_name or author_email) else "default",
+        }
+
 
 
 git_service = GitService()

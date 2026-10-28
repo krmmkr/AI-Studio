@@ -19,13 +19,9 @@ ENV_PATH = BASE_DIR / ".env"
 if ENV_PATH.exists():
     load_dotenv(dotenv_path=ENV_PATH)
 
-# Ensure local directories exist with open permissions
+# Ensure local directories exist
 for _dir in (LOCAL_DATA_DIR, STORAGE_DIR, REPOS_DIR, DERIVED_DATASETS_DIR, SESSIONS_ROOT_DIR, ANTIGRAVITY_APP_DATA, STATIC_DIR):
     _dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(_dir, 0o777)
-    except Exception:
-        pass
 
 # Environment: 'development', 'testing', 'production'
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").lower()
@@ -87,10 +83,6 @@ def normalize_database_url(url: str, base_dir: Path) -> str:
             resolved = file_path.resolve()
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(resolved.parent, 0o777)
-            except Exception:
-                pass
         except Exception:
             pass
         return f"sqlite:///{resolved}"
@@ -161,3 +153,10 @@ if ENVIRONMENT == "production" and LLM_PROVIDER == "opencode":
         "PRODUCTION COMPLIANCE ERROR: OpenCode 2.1 is designated for development/testing only "
         "and is strictly prohibited in production mode. Set LLM_PROVIDER=antigravity for production."
     )
+
+# OAuth 2.0 Integration Configs (Atlassian Jira MCP, GitHub OAuth)
+ATLASSIAN_CLIENT_ID = os.environ.get("ATLASSIAN_CLIENT_ID", "").strip()
+ATLASSIAN_CLIENT_SECRET = os.environ.get("ATLASSIAN_CLIENT_SECRET", "").strip()
+GITHUB_OAUTH_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "").strip()
+GITHUB_OAUTH_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "").strip()
+APP_BASE_URL = os.environ.get("APP_BASE_URL", f"http://{HOST}:{PORT}").rstrip("/")

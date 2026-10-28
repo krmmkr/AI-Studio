@@ -223,9 +223,10 @@ def delete_dashboard(dashboard_id: str, current_user: User = Depends(get_current
     if dashboard.user_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized to delete this dashboard")
 
-    # Detach any chat sessions scoped to this dashboard
+    # Automatically archive all chat sessions scoped to this dashboard so they don't linger as orphaned active chats
     db.query(ChatSession).filter(ChatSession.dashboard_id == dashboard_id).update(
-        {ChatSession.dashboard_id: None}, synchronize_session=False
+        {ChatSession.is_archived: True, ChatSession.updated_at: datetime.datetime.utcnow()},
+        synchronize_session=False
     )
 
     # Delete associated widgets and comments

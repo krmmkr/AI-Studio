@@ -6,7 +6,6 @@ import {
   Users,
   Database,
   ChevronDown,
-  ChevronRight,
   Moon,
   Sun,
   Sliders,
@@ -15,6 +14,8 @@ import {
   Globe,
   Sparkles,
   Terminal,
+  Code2,
+  KeyRound,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -22,11 +23,12 @@ interface NavbarProps {
   darkMode: boolean;
   onToggleDarkMode: () => void;
   onNavigateHome?: () => void;
-  activeTab?: 'chat' | 'my' | 'public';
-  onSelectTab?: (tab: 'chat' | 'my' | 'public') => void;
+  activeTab?: 'chat' | 'my' | 'public' | 'studio';
+  onSelectTab?: (tab: 'chat' | 'my' | 'public' | 'studio') => void;
   workspaceScope?: 'my' | 'public';
   onSelectWorkspaceScope?: (scope: 'my' | 'public') => void;
   onOpenSettings: () => void;
+  onOpenUserSettings?: () => void;
   onOpenAgentInstructions: () => void;
   onOpenRepoManager?: () => void;
   onOpenUserManagement: () => void;
@@ -44,6 +46,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   workspaceScope = 'my',
   onSelectWorkspaceScope,
   onOpenSettings,
+  onOpenUserSettings,
   onOpenAgentInstructions,
   onOpenRepoManager,
   onOpenUserManagement,
@@ -71,9 +74,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isChatActive = activeTab === 'chat';
   const isMyActive = activeTab ? activeTab === 'my' : workspaceScope === 'my';
   const isPublicActive = activeTab ? activeTab === 'public' : workspaceScope === 'public';
+  const isStudioActive = activeTab === 'studio';
 
   return (
-    <header className="h-16 px-4 sm:px-6 bg-m3-surface-container-low border-b border-m3-outline-variant/30 flex items-center justify-between shrink-0 z-30 transition-colors">
+    <header className="h-16 px-4 sm:px-6 bg-m3-surface-container-low border-b border-m3-outline-variant/30 flex items-center justify-between shrink-0 relative z-50 transition-colors">
       {/* Brand with Custom AI Studio Logo */}
       <button
         onClick={onNavigateHome}
@@ -83,7 +87,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <AIStudioLogo size="md" showText={true} />
       </button>
 
-      {/* Center: Top Workspace Menu (Agentic Chat vs My Workspace vs Public Workspace) */}
+      {/* Center: Top Workspace Menu (Agentic Chat vs My Workspace vs Public Workspace vs Code Studio) */}
       {(onSelectTab || onSelectWorkspaceScope) && (
         <div className="flex items-center p-1 bg-m3-surface-container rounded-full shadow-2xs">
           {/* Tab 1: Agentic Chat (First Tab) */}
@@ -133,6 +137,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Globe className="w-3.5 h-3.5" />
             <span>Public Workspace</span>
           </button>
+
+          {/* Tab 4: Code Studio IDE */}
+          <button
+            onClick={() => (onSelectTab ? onSelectTab('studio') : undefined)}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all ${
+              isStudioActive
+                ? 'bg-m3-primary text-m3-on-primary shadow-xs'
+                : 'text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-container-high'
+            }`}
+            title="Monaco IDE, Git Worktrees & Sandbox Terminal"
+          >
+            <Code2 className="w-3.5 h-3.5" />
+            <span>Code Studio</span>
+          </button>
         </div>
       )}
 
@@ -169,11 +187,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               <ChevronDown className={`w-3.5 h-3.5 text-m3-on-surface-variant transition-transform duration-200 ${dropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
-            {/* Apache Superset 7.0 Style Expressive Spaced User Menu */}
+            {/* Clean Flat User Menu Dropdown */}
             {dropdownOpen && (
-              <div className="absolute right-0 mt-2.5 w-80 rounded-2xl bg-m3-surface p-2 shadow-2xl border border-m3-outline-variant/30 flex flex-col z-50 animate-fadeIn divide-y divide-m3-outline-variant/15 backdrop-blur-md">
-                {/* 1. Superset User Profile Header Card */}
-                <div className="p-3 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/25 mb-1.5">
+              <div className="absolute right-0 mt-2.5 w-64 rounded-2xl bg-m3-surface p-1.5 shadow-2xl border border-m3-outline-variant/30 flex flex-col z-[70] animate-fadeIn backdrop-blur-md">
+                {/* User Profile Header Card */}
+                <div className="p-3 rounded-xl bg-m3-surface-container-low border border-m3-outline-variant/25 mb-1">
                   <div className="flex items-center gap-3">
                     <div className="relative">
                       <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-m3-primary to-m3-primary/80 text-m3-on-primary flex items-center justify-center font-bold text-sm shadow-xs ring-2 ring-m3-primary/20">
@@ -197,33 +215,34 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </div>
                 </div>
 
-                {/* 2. Data & Analytics Section (Superset SQL Lab & Datasets) */}
-                <div className="py-1.5 flex flex-col gap-0.5">
-                  <div className="px-3 pt-1 pb-1 text-[10px] font-bold tracking-wider text-m3-on-surface-variant/70 uppercase">
-                    Data & Analytics
-                  </div>
+                {/* Flat Menu Items without subtexts or grouping */}
+                <div className="flex flex-col gap-0.5">
+                  {onOpenUserSettings && (
+                    <button
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        onOpenUserSettings();
+                      }}
+                      className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
+                    >
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        <KeyRound className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="truncate">User Settings & Integrations</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => {
                       setDropdownOpen(false);
                       onOpenDuckDBConsole();
                     }}
-                    className="flex items-center justify-between px-3 py-2 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full"
+                    className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                        <Terminal className="w-4 h-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-m3-on-surface group-hover:text-m3-primary transition-colors">
-                          DuckDB SQL Console
-                        </div>
-                        <div className="text-[11px] text-m3-on-surface-variant truncate">
-                          Fast in-process SQL queries & analytical tables
-                        </div>
-                      </div>
+                    <div className="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <Terminal className="w-3.5 h-3.5" />
                     </div>
-                    <ChevronRight className="w-4 h-4 text-m3-on-surface-variant/40 group-hover:text-m3-on-surface-variant group-hover:translate-x-0.5 transition-all shrink-0 ml-2" />
+                    <span className="truncate">DuckDB SQL Console</span>
                   </button>
 
                   <button
@@ -231,22 +250,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                       setDropdownOpen(false);
                       onOpenSettings();
                     }}
-                    className="flex items-center justify-between px-3 py-2 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full"
+                    className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                        <Database className="w-4 h-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-m3-on-surface group-hover:text-m3-primary transition-colors">
-                          Datasources Hub
-                        </div>
-                        <div className="text-[11px] text-m3-on-surface-variant truncate">
-                          PostgreSQL, Snowflake, APIs & uploaded tables
-                        </div>
-                      </div>
+                    <div className="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <Database className="w-3.5 h-3.5" />
                     </div>
-                    <ChevronRight className="w-4 h-4 text-m3-on-surface-variant/40 group-hover:text-m3-on-surface-variant group-hover:translate-x-0.5 transition-all shrink-0 ml-2" />
+                    <span className="truncate">MCP Hub</span>
                   </button>
 
                   {onOpenRepoManager && (
@@ -255,53 +264,26 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setDropdownOpen(false);
                         onOpenRepoManager();
                       }}
-                      className="flex items-center justify-between px-3 py-2 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full"
+                      className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                          <FolderGit2 className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-semibold text-m3-on-surface group-hover:text-m3-primary transition-colors">
-                            Git Repositories
-                          </div>
-                          <div className="text-[11px] text-m3-on-surface-variant truncate">
-                            Cloned repositories & codebase analysis
-                          </div>
-                        </div>
+                      <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        <FolderGit2 className="w-3.5 h-3.5" />
                       </div>
-                      <ChevronRight className="w-4 h-4 text-m3-on-surface-variant/40 group-hover:text-m3-on-surface-variant group-hover:translate-x-0.5 transition-all shrink-0 ml-2" />
+                      <span className="truncate">Git Repositories</span>
                     </button>
                   )}
-                </div>
-
-                {/* 3. Studio & Customization Section */}
-                <div className="py-1.5 flex flex-col gap-0.5">
-                  <div className="px-3 pt-1 pb-1 text-[10px] font-bold tracking-wider text-m3-on-surface-variant/70 uppercase">
-                    Studio Configuration
-                  </div>
 
                   <button
                     onClick={() => {
                       setDropdownOpen(false);
                       onOpenAgentInstructions();
                     }}
-                    className="flex items-center justify-between px-3 py-2 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full"
+                    className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                        <Sliders className="w-4 h-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-m3-on-surface group-hover:text-m3-primary transition-colors">
-                          Agent Personas & Prompts
-                        </div>
-                        <div className="text-[11px] text-m3-on-surface-variant truncate">
-                          System instructions & behavioral guidelines
-                        </div>
-                      </div>
+                    <div className="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <Sliders className="w-3.5 h-3.5" />
                     </div>
-                    <ChevronRight className="w-4 h-4 text-m3-on-surface-variant/40 group-hover:text-m3-on-surface-variant group-hover:translate-x-0.5 transition-all shrink-0 ml-2" />
+                    <span className="truncate">Agent Personas & Prompts</span>
                   </button>
 
                   <button
@@ -309,45 +291,27 @@ export const Navbar: React.FC<NavbarProps> = ({
                       setDropdownOpen(false);
                       onOpenUserManagement();
                     }}
-                    className="flex items-center justify-between px-3 py-2 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full"
+                    className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-surface-container-high transition-colors group cursor-pointer w-full text-xs font-medium text-m3-on-surface hover:text-m3-primary"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                        <Users className="w-4 h-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-m3-on-surface group-hover:text-m3-primary transition-colors">
-                          User & Access Management
-                        </div>
-                        <div className="text-[11px] text-m3-on-surface-variant truncate">
-                          Manage members, roles & permissions
-                        </div>
-                      </div>
+                    <div className="w-7 h-7 rounded-lg bg-cyan-500/10 text-cyan-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <Users className="w-3.5 h-3.5" />
                     </div>
-                    <ChevronRight className="w-4 h-4 text-m3-on-surface-variant/40 group-hover:text-m3-on-surface-variant group-hover:translate-x-0.5 transition-all shrink-0 ml-2" />
+                    <span className="truncate">User & Access Management</span>
                   </button>
-                </div>
 
-                {/* 4. Session Actions */}
-                <div className="pt-1.5 flex flex-col gap-1">
+                  <div className="my-1 border-t border-m3-outline-variant/15" />
+
                   <button
                     onClick={() => {
                       setDropdownOpen(false);
                       onLogout();
                     }}
-                    className="flex items-center justify-between px-3 py-2.5 text-left rounded-xl hover:bg-m3-error-container/30 transition-colors group cursor-pointer w-full text-m3-error"
+                    className="flex items-center gap-2.5 px-2.5 py-1.5 text-left rounded-xl hover:bg-m3-error-container/30 transition-colors group cursor-pointer w-full text-xs font-medium text-m3-error"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-m3-error-container/40 text-m3-error flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                        <LogOut className="w-4 h-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold">Sign Out</div>
-                        <div className="text-[11px] opacity-80 truncate">
-                          End current session securely
-                        </div>
-                      </div>
+                    <div className="w-7 h-7 rounded-lg bg-m3-error-container/40 text-m3-error flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <LogOut className="w-3.5 h-3.5" />
                     </div>
+                    <span className="truncate">Sign Out</span>
                   </button>
                 </div>
               </div>

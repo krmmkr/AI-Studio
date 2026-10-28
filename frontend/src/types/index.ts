@@ -41,20 +41,26 @@ export interface MCPConfig {
 export interface ChatSession {
   id: string;
   title: string;
+  session_type?: 'general' | 'dashboard' | 'code';
+  repo_id?: number | null;
+  repo_name?: string | null;
+  worktree_path?: string | null;
+  worktree_branch?: string | null;
   agent_id?: string | null;
   status?: 'idle' | 'running' | 'stopping' | 'awaiting_permission' | 'timed_out' | 'failed' | 'completed';
   last_error?: string | null;
   dashboard_id?: string | null;
   dashboard_title?: string | null;
-  scope?: 'global' | 'dashboard' | 'pin';
+  scope?: 'global' | 'dashboard' | 'pin' | 'worktree';
   pin_id?: number | null;
   widget_id?: string | null;
   parent_session_id?: string | null;
   parent_title?: string | null;
   fork_message_id?: number | null;
+  is_archived?: boolean;
   created_at?: string;
   updated_at?: string;
-  message_count: number;
+  message_count?: number;
 }
 
 export interface ToolCallTrace {
@@ -88,9 +94,27 @@ export interface UserInquiry {
   selected_option?: string;
   command?: string;
   repo?: string;
+  branch?: string;
+  commit_message?: string;
   file_path?: string;
   rationale?: string;
   status?: string;
+}
+
+export interface ChatUsageMetadata {
+  prompt_tokens?: number;
+  candidates_tokens?: number;
+  thoughts_tokens?: number;
+  cached_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface ChatAttachment {
+  name: string;
+  mime_type?: string;
+  data?: string;
+  preview_url?: string;
+  size?: number;
 }
 
 export interface ChatMessage {
@@ -101,6 +125,8 @@ export interface ChatMessage {
   tool_calls?: ToolCallTrace[];
   proposals?: DatasetProposal[];
   inquiries?: UserInquiry[];
+  usage?: ChatUsageMetadata;
+  attachments?: ChatAttachment[];
   created_at?: string;
 }
 

@@ -150,5 +150,58 @@ def ensure_db_schema():
                 conn.commit()
             except Exception:
                 pass
+            try:
+                conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN session_type VARCHAR(20) DEFAULT 'general';"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN repo_id INTEGER;"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN worktree_path VARCHAR(500);"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN worktree_branch VARCHAR(100);"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN is_archived BOOLEAN DEFAULT 0;"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                # Backfill session_type: ensure dashboard/pin chats are 'dashboard', and code/worktree chats are 'code'
+                conn.execute(text("""
+                    UPDATE chat_sessions 
+                    SET session_type = 'dashboard' 
+                    WHERE pin_id IS NOT NULL OR scope = 'pin' OR id LIKE 'pin-%' OR (dashboard_id IS NOT NULL AND repo_id IS NULL);
+                """))
+                conn.execute(text("""
+                    UPDATE chat_sessions 
+                    SET session_type = 'code' 
+                    WHERE (repo_id IS NOT NULL OR worktree_branch IS NOT NULL OR worktree_path IS NOT NULL OR title LIKE '%agor%')
+                      AND (pin_id IS NULL AND scope != 'pin' AND id NOT LIKE 'pin-%');
+                """))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                # Backfill agor: main session repo_id and worktree_branch if missing
+                conn.execute(text("""
+                    UPDATE chat_sessions
+                    SET repo_id = (SELECT id FROM local_repositories WHERE name = 'agor' LIMIT 1),
+                        worktree_branch = 'main',
+                        session_type = 'code'
+                    WHERE (title LIKE '%agor:%' OR title LIKE '%Branch of agor%') AND (repo_id IS NULL OR worktree_branch IS NULL);
+                """))
+                conn.commit()
+            except Exception:
+                pass
     except Exception as e:
         logger.debug(f"Schema check notice: {e}")

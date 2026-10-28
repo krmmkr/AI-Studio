@@ -224,10 +224,10 @@ export const MCPSettingsModal: React.FC<MCPSettingsModalProps> = ({
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-bold text-m3-on-surface">
-                Connected Datasources Hub
+                MCP Hub
               </h2>
               <p className="text-xs text-m3-on-surface-variant">
-                Live MCP protocols, local DuckDB in-memory datasets, and cloned Git repositories powering Antigravity.
+                Live MCP protocols, local DuckDB in-memory datasets, and cloned Git repositories powering AI Studio.
               </p>
             </div>
           </div>

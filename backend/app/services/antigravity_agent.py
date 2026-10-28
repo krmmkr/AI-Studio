@@ -59,6 +59,12 @@ class AntigravityAgentService:
         model: str | None = None,
         parent_context: str = "",
         parent_session_id: str | None = None,
+        repo_id: int | None = None,
+        worktree_path: str | None = None,
+        worktree_branch: str | None = None,
+        session_type: str | None = None,
+        thinking_level: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         active_provider = (
             provider_override or os.environ.get("LLM_PROVIDER") or LLM_PROVIDER or "antigravity"
@@ -104,6 +110,12 @@ class AntigravityAgentService:
                 model_override=model,
                 parent_context=parent_context,
                 parent_session_id=parent_session_id,
+                repo_id=repo_id,
+                worktree_path=worktree_path,
+                worktree_branch=worktree_branch,
+                session_type=session_type,
+                thinking_level=thinking_level,
+                attachments=attachments,
             ):
                 yield event
         except Exception as err:

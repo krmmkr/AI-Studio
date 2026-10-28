@@ -206,14 +206,14 @@ async def stream_with_opencode_sdk(
     emitted_canvas_actions: list[dict[str, Any]] = []
     emitted_proposals: list[dict[str, Any]] = []
     emitted_widget_ids: set[str] = set()
-    tool_funcs = build_agent_tools(current_dashboard_id, emitted_canvas_actions, emitted_proposals)
+    tool_funcs = build_agent_tools(current_dashboard_id, emitted_canvas_actions, emitted_proposals, session_id=session_id)
     tool_map = {fn.__name__: fn for fn in tool_funcs}
 
-    sample_repo = "agor"
+    sample_repo = "repository"
     try:
         if REPOS_DIR.exists():
             for p in sorted(REPOS_DIR.iterdir()):
-                if p.is_dir():
+                if p.is_dir() and not p.name.startswith("."):
                     sample_repo = p.name.removesuffix(".git")
                     break
     except Exception:

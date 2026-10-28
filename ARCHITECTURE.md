@@ -1,4 +1,4 @@
-# Project Cockpit: Antigravity-Powered Chat & Dynamic Canvas Studio
+# AI Studio: Antigravity-Powered Chat & Dynamic Canvas Studio
 
 ## 1. Executive Summary
 
@@ -115,7 +115,7 @@ The platform is laser-focused on **two core verticals**:
 
 1. **Direct Backend Integration**:
    - The Antigravity agent talks directly to Superset's REST/MCP endpoints (`/api/v1/chart/data` and `/api/v1/sqllab/execute/`).
-   - The user never leaves the Cockpit; no need to navigate Superset's complex dashboard or slice UI.
+   - The user never leaves AI Studio; no need to navigate Superset's complex dashboard or slice UI.
 2. **Context Enhancer (Data Catalog MCP)**:
    - Supplies the semantic schema, column definitions, table lineage, and business glossary before query execution.
    - Prevents SQL syntax errors and hallucinated column names.

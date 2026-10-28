@@ -16,12 +16,16 @@ import {
   Sparkles,
   Loader2,
   GitBranch,
+  GitPullRequest,
   RotateCcw,
   Terminal,
   ShieldAlert,
   Play,
   FileCode,
   PauseCircle,
+  FileText,
+  Zap,
+  Cpu,
 } from 'lucide-react';
 import { AgentThinkingTrace } from './AgentThinkingTrace';
 
@@ -32,6 +36,7 @@ interface MessageItemProps {
   onSelectSuggestion?: (text: string) => void;
   onForkAtMessage?: (messageId: number) => void;
   onRetryMessage?: () => void;
+  onNavigateToStudio?: (repoId?: number, worktreePath?: string, filePath?: string) => void;
   isStreaming?: boolean;
 }
 
@@ -347,6 +352,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   onSelectSuggestion,
   onForkAtMessage,
   onRetryMessage,
+  onNavigateToStudio,
   isStreaming = false,
 }) => {
   const isAssistant = message.role === 'assistant';
@@ -489,7 +495,48 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           }`}
         >
           {!isAssistant ? (
-            <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0">{message.content}</div>
+            <div className="flex flex-col gap-2 min-w-0">
+              {message.attachments && message.attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-1">
+                  {message.attachments.map((att, attIdx) => {
+                    const isImg =
+                      att.mime_type?.startsWith('image/') ||
+                      Boolean(att.data?.startsWith('data:image/')) ||
+                      /\.(png|jpe?g|webp|gif|svg)$/i.test(att.name);
+                    const srcUrl = att.data || att.preview_url;
+                    return (
+                      <div
+                        key={attIdx}
+                        className="rounded-2xl overflow-hidden bg-black/15 dark:bg-white/10 border border-white/20 p-1 flex flex-col gap-1 max-w-xs"
+                      >
+                        {isImg && srcUrl ? (
+                          <img
+                            src={srcUrl}
+                            alt={att.name}
+                            className="max-h-48 max-w-full rounded-xl object-contain bg-black/20"
+                          />
+                        ) : (
+                          <div className="flex items-center gap-2 px-3 py-2">
+                            <FileText className="w-4 h-4 text-white/90 shrink-0" />
+                            <span className="text-xs text-white/90 font-mono truncate max-w-[180px]">
+                              {att.name}
+                            </span>
+                          </div>
+                        )}
+                        {isImg && (
+                          <div className="px-2 py-0.5 text-[10px] text-white/80 font-mono truncate">
+                            {att.name}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0">
+                {message.content}
+              </div>
+            </div>
           ) : (
             <div className="space-y-3 w-full min-w-0">
               {segments.length === 0 ? (
@@ -1014,46 +1061,164 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                             </div>
                           )}
 
-                          <div className="flex items-center justify-end gap-2.5 mt-3 pt-2.5 border-t border-blue-500/20">
-                            {chosenOption ? (
-                              <span
-                                className={`text-xs font-semibold px-3 py-1 rounded-full border ${
-                                  chosenOption.toLowerCase().includes('decline')
-                                    ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20'
-                                    : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                                }`}
+                          <div className="flex items-center justify-between gap-2.5 mt-3 pt-2.5 border-t border-blue-500/20 flex-wrap">
+                            {onNavigateToStudio && (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToStudio(undefined, undefined, inq.file_path)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-on-surface border border-m3-outline-variant/30 transition-colors cursor-pointer"
+                                title="Open this file in Monaco Code Studio to review full source and diff"
                               >
-                                {chosenOption.toLowerCase().includes('decline') ? '✕ Edit Declined' : '✓ Edit Approved'}
-                              </span>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleSelectOption(
-                                      inq.id,
-                                      `[DECLINED] File modification for \`${inq.file_path || 'file'}\` was declined.`
-                                    )
-                                  }
-                                  className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-m3-on-surface-variant hover:bg-m3-surface-container transition-colors cursor-pointer border border-m3-outline-variant/30"
-                                >
-                                  Decline
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleSelectOption(
-                                      inq.id,
-                                      `[APPROVED] File modification approved for \`${inq.file_path || 'file'}\`. Apply the edit and confirm.`
-                                    )
-                                  }
-                                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors cursor-pointer"
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>Approve & Apply Edit</span>
-                                </button>
-                              </>
+                                <Code2 className="w-3.5 h-3.5 text-indigo-400" />
+                                <span>Review in Code Studio</span>
+                                <ArrowUpRight className="w-3 h-3 text-m3-on-surface-variant" />
+                              </button>
                             )}
+                            <div className="flex items-center gap-2 ml-auto">
+                              {chosenOption ? (
+                                <span
+                                  className={`text-xs font-semibold px-3 py-1 rounded-full border ${
+                                    chosenOption.toLowerCase().includes('decline')
+                                      ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20'
+                                      : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                  }`}
+                                >
+                                  {chosenOption.toLowerCase().includes('decline') ? '✕ Edit Declined' : '✓ Edit Approved'}
+                                </span>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleSelectOption(
+                                        inq.id,
+                                        `[DECLINED] File modification for \`${inq.file_path || 'file'}\` was declined.`
+                                      )
+                                    }
+                                    className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-m3-on-surface-variant hover:bg-m3-surface-container transition-colors cursor-pointer border border-m3-outline-variant/30"
+                                  >
+                                    Decline
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleSelectOption(
+                                        inq.id,
+                                        `[APPROVED] File modification approved for \`${inq.file_path || 'file'}\`. Apply the edit and confirm.`
+                                      )
+                                    }
+                                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors cursor-pointer"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Approve & Apply Edit</span>
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // If Git Commit & Push Approval
+                const isGitPushApproval =
+                  inq.type === 'git_push_approval' ||
+                  Boolean(inq.branch && inq.commit_message) ||
+                  inq.question?.toLowerCase().includes('commit changes and push') ||
+                  inq.options.some((opt) => opt.toLowerCase().includes('approve & push'));
+
+                if (isGitPushApproval) {
+                  const targetBranch = inq.branch || 'main';
+                  const commitMsg = inq.commit_message || 'Update repository codebase';
+                  const repoName = inq.repo || '';
+
+                  return (
+                    <div
+                      key={inq.id}
+                      className="my-3 rounded-2xl border border-indigo-500/35 bg-indigo-500/5 dark:bg-indigo-500/10 p-3.5 shadow-2xs w-full min-w-0 overflow-hidden break-words"
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-indigo-500/15 text-indigo-400 flex items-center justify-center shrink-0 mt-0.5 shadow-inner">
+                          <GitPullRequest className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-xs font-bold text-m3-on-surface flex items-center gap-1.5">
+                              <GitBranch className="w-3.5 h-3.5 text-indigo-400" />
+                              Git Commit & Remote Push Authorization
+                            </span>
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-300 font-semibold border border-indigo-500/25">
+                              Remote Synchronization
+                            </span>
+                          </div>
+                          <p className="text-xs text-m3-on-surface mt-1 font-semibold">{inq.question}</p>
+
+                          <div className="mt-2.5 p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col gap-1.5 text-xs font-mono">
+                            <div className="flex items-center gap-2 text-zinc-400 text-[11px]">
+                              {repoName && <span className="text-zinc-300">Repo: <strong className="text-white">{repoName}</strong></span>}
+                              <span>Branch: <span className="text-indigo-400 font-semibold">{targetBranch}</span></span>
+                            </div>
+                            <div className="text-zinc-200">
+                              <span className="text-zinc-400">Message:</span> "{commitMsg}"
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2.5 mt-3 pt-2.5 border-t border-indigo-500/20 flex-wrap">
+                            {onNavigateToStudio && (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToStudio()}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-m3-surface-container hover:bg-m3-surface-container-high text-m3-on-surface border border-m3-outline-variant/30 transition-colors cursor-pointer"
+                                title="Inspect working tree diff before pushing"
+                              >
+                                <Code2 className="w-3.5 h-3.5 text-indigo-400" />
+                                <span>Inspect in Code Studio</span>
+                                <ArrowUpRight className="w-3 h-3 text-m3-on-surface-variant" />
+                              </button>
+                            )}
+                            <div className="flex items-center gap-2 ml-auto">
+                              {chosenOption ? (
+                                <span
+                                  className={`text-xs font-semibold px-3 py-1 rounded-full border ${
+                                    chosenOption.toLowerCase().includes('decline')
+                                      ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20'
+                                      : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                  }`}
+                                >
+                                  {chosenOption.toLowerCase().includes('decline') ? '✕ Push Declined' : '✓ Push Approved'}
+                                </span>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleSelectOption(
+                                        inq.id,
+                                        `[DECLINED] Git commit and push for branch \`${targetBranch}\` was declined.`
+                                      )
+                                    }
+                                    className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-m3-on-surface-variant hover:bg-m3-surface-container transition-colors cursor-pointer border border-m3-outline-variant/30"
+                                  >
+                                    Decline
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleSelectOption(
+                                        inq.id,
+                                        `[APPROVED] Commit changes with message "${commitMsg}" and push branch \`${targetBranch}\` to remote. Execute execute_git_commit_and_push now.`
+                                      )
+                                    }
+                                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-colors cursor-pointer"
+                                  >
+                                    <GitPullRequest className="w-3.5 h-3.5" />
+                                    <span>Approve & Push to Remote</span>
+                                  </button>
+                                </>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1205,6 +1370,39 @@ export const MessageItem: React.FC<MessageItemProps> = ({
             <span className="inline-block w-2 h-4 ml-1 bg-m3-primary animate-pulse align-middle" />
           )}
 
+          {/* Token Usage Telemetry Bar */}
+          {isAssistant && message.usage && (
+            <div className="flex flex-wrap items-center gap-1.5 mt-2.5 pt-2 border-t border-m3-outline-variant/15 text-[10px] font-mono text-m3-on-surface-variant">
+              {message.usage.total_tokens !== undefined && message.usage.total_tokens > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-m3-surface-container text-m3-on-surface-variant border border-m3-outline-variant/20"
+                  title={`Prompt tokens: ${message.usage.prompt_tokens ?? 0} • Candidate tokens: ${message.usage.candidates_tokens ?? 0}`}
+                >
+                  <Zap className="w-3 h-3 text-amber-500" />
+                  <span>{message.usage.total_tokens.toLocaleString()} tokens</span>
+                </span>
+              )}
+              {Boolean(message.usage.thoughts_tokens && message.usage.thoughts_tokens > 0) && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-500 dark:text-indigo-400 border border-indigo-500/20"
+                  title="Reasoning / thinking tokens consumed by Gemini"
+                >
+                  <Cpu className="w-3 h-3" />
+                  <span>{message.usage.thoughts_tokens?.toLocaleString()} reasoning</span>
+                </span>
+              )}
+              {Boolean(message.usage.cached_tokens && message.usage.cached_tokens > 0) && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                  title="Context cache hits saved on input tokens"
+                >
+                  <Database className="w-3 h-3" />
+                  <span>{message.usage.cached_tokens?.toLocaleString()} cached</span>
+                </span>
+              )}
+            </div>
+          )}
+
           {isAssistant && (onRetryMessage || (message.id && onForkAtMessage)) && !isStreaming && (
             <div className="flex items-center justify-end gap-2 mt-2 pt-1.5 border-t border-m3-outline-variant/15 text-[11px] text-m3-on-surface-variant">
               {onRetryMessage && (
@@ -1229,6 +1427,20 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                   <span>Fork from here</span>
                 </button>
               )}
+            </div>
+          )}
+
+          {!isAssistant && message.id && onForkAtMessage && !isStreaming && (
+            <div className="flex items-center justify-end gap-2 mt-1.5 pt-1 text-[11px] text-m3-on-primary-container/80 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                type="button"
+                onClick={() => onForkAtMessage(message.id!)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                title="Create a new conversation branch starting up to this prompt"
+              >
+                <GitBranch className="w-3 h-3" />
+                <span>Fork from here</span>
+              </button>
             </div>
           )}
         </div>
